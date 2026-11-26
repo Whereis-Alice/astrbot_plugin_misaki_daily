@@ -16,13 +16,15 @@ MARGIN = 27
 CONTENT_X = 54
 CONTENT_W = WIDTH - 2 * CONTENT_X
 GAP = 18
-INK = "#302735"
-MUTED = "#716071"
-ACCENT = "#9A4D77"
-EDGE = "#C78EAD"
-PAPER = "#F8F2F6"
-PANEL = "#FBF6F9"
-LABEL = "#FFFBFD"
+INK = "#263C2F"
+MUTED = "#526D5D"
+ACCENT = "#356A4D"
+EDGE = "#90BC9D"
+PAPER = "#F1F8F0"
+PANEL = "#F8FCF6"
+LABEL = "#FDFFF9"
+TINT = "#E3F1E3"
+RULE = "#D7E8D8"
 SECTION_TITLES = {
     "hot": "B站热点",
     "anime": "今日新番",
@@ -129,7 +131,7 @@ def _frame(
             icon, (31 + (31 - icon.width) // 2, 12 + (31 - icon.height) // 2), icon
         )
     else:
-        draw.rounded_rectangle((31, 12, 62, 43), radius=7, fill="#F1E1ED")
+        draw.rounded_rectangle((31, 12, 62, 43), radius=7, fill=TINT)
         _text(draw, (47, 28), "EN", 14, ACCENT, anchor="mm", weight=1)
     _text(draw, (72, 16), label, 27, ACCENT, weight=1)
     if source and label_right + _font(17).getlength(source) + 45 < width:
@@ -150,7 +152,7 @@ def _calendar(festivals: list[dict], width: int, height: int) -> Image.Image:
             draw, (width - 24, y + 2), _countdown(item), 23, INK, anchor="rt", weight=1
         )
         if index < len(festivals) - 1:
-            draw.line((24, y + 34, width - 24, y + 34), fill="#EBDCE6")
+            draw.line((24, y + 34, width - 24, y + 34), fill=RULE)
     return image
 
 
@@ -228,7 +230,7 @@ def _anime_panel(section: dict, show_covers: bool) -> Image.Image:
         poster = _cover(item.get("cover", ""), (poster_w, poster_h))
         if poster is None:
             draw.rounded_rectangle(
-                (x, y, x + poster_w - 1, y + poster_h - 1), radius=11, fill="#F1E4EE"
+                (x, y, x + poster_w - 1, y + poster_h - 1), radius=11, fill=TINT
             )
             _text(
                 draw,
@@ -302,7 +304,7 @@ def _masthead(canvas: Image.Image, report: dict, custom_portrait: Path | None) -
     draw = ImageDraw.Draw(canvas)
     for y in range(59, 307, 9):
         for x in range(57 + (y % 2) * 4, WIDTH - 59, 9):
-            draw.point((x, y), fill="#E8D9E4")
+            draw.point((x, y), fill=RULE)
 
     portrait = _portrait(custom_portrait) or _portrait(ASSETS / "portrait.webp")
     if portrait is not None:
@@ -312,7 +314,7 @@ def _masthead(canvas: Image.Image, report: dict, custom_portrait: Path | None) -
             portrait,
         )
     else:
-        draw.ellipse((94, 91, 239, 236), outline="#DEC3D6", width=2)
+        draw.ellipse((94, 91, 239, 236), outline="#B4D5BC", width=2)
         draw.line(
             [
                 (98, 201),
@@ -323,20 +325,21 @@ def _masthead(canvas: Image.Image, report: dict, custom_portrait: Path | None) -
                 (149, 183),
                 (98, 201),
             ],
-            fill="#BD85A8",
+            fill="#70A784",
             width=4,
             joint="curve",
         )
         draw.line(
-            [(149, 183), (225, 122), (164, 194)], fill="#BD85A8", width=3, joint="curve"
+            [(149, 183), (225, 122), (164, 194)], fill="#70A784", width=3, joint="curve"
         )
 
     title_xy = (468, 92)
+    title_fill = "#548C68"
     font = _font(149)
     draw.text(
         (title_xy[0] + 7, title_xy[1] + 8),
         "日报",
-        fill="#B7789D",
+        fill="#367054",
         font=font,
         anchor="mt",
         stroke_width=9,
@@ -344,22 +347,22 @@ def _masthead(canvas: Image.Image, report: dict, custom_portrait: Path | None) -
     draw.text(
         title_xy,
         "日报",
-        fill="#D18EB0",
+        fill=title_fill,
         font=font,
         anchor="mt",
         stroke_width=9,
         stroke_fill=LABEL,
     )
-    draw.text(title_xy, "日报", fill="#D18EB0", font=font, anchor="mt", stroke_width=4)
+    draw.text(title_xy, "日报", fill=title_fill, font=font, anchor="mt", stroke_width=4)
 
     date_x = WIDTH - CONTENT_X - 205
     right = WIDTH - CONTENT_X
     center = (date_x + right) // 2
     top, bottom = 75, 302
     draw.rounded_rectangle((date_x, top, right, bottom), radius=22, fill=LABEL)
-    draw.rounded_rectangle((date_x, top, right, top + 136), radius=22, fill="#EFE1EA")
-    draw.rectangle((date_x + 2, top + 105, right - 2, top + 130), fill="#EFE1EA")
-    draw.rectangle((date_x + 2, top + 126, right - 2, top + 177), fill="#B97098")
+    draw.rounded_rectangle((date_x, top, right, top + 136), radius=22, fill=TINT)
+    draw.rectangle((date_x + 2, top + 105, right - 2, top + 130), fill=TINT)
+    draw.rectangle((date_x + 2, top + 126, right - 2, top + 177), fill="#3D7958")
     draw.rounded_rectangle(
         (date_x, top, right, bottom), radius=22, outline=EDGE, width=3
     )
@@ -369,7 +372,7 @@ def _masthead(canvas: Image.Image, report: dict, custom_portrait: Path | None) -
         (center, top + 66),
         calendar["weekday"][-1],
         79,
-        "#B86E98",
+        ACCENT,
         anchor="mm",
         weight=2,
     )
@@ -419,7 +422,7 @@ def render_card(report: dict, custom_portrait: Path | None = None) -> bytes:
 
     start = 319
     height = start + sum(row[0].height + GAP for row in rows) + MARGIN + 8
-    canvas = Image.new("RGB", (WIDTH, height), "#E1BED2")
+    canvas = Image.new("RGB", (WIDTH, height), "#B9D8C0")
     draw = ImageDraw.Draw(canvas)
     draw.rounded_rectangle(
         (MARGIN, MARGIN, WIDTH - MARGIN - 1, height - MARGIN - 1), radius=31, fill=PAPER

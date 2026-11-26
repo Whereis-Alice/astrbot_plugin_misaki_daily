@@ -7,7 +7,9 @@ import json
 import logging
 import re
 from collections.abc import Awaitable
-from datetime import date
+from datetime import date, timedelta
+from itertools import batched
+from time import monotonic
 from typing import Literal, NotRequired, TypedDict
 from urllib.parse import quote, urlsplit, urlunsplit
 from xml.etree import ElementTree
@@ -19,21 +21,27 @@ LOGGER = logging.getLogger(__name__)
 
 UAPI = "https://uapis.cn/api/v1"
 BANGUMI_CALENDAR = "https://api.bgm.tv/calendar"
+BANGUMI_EPISODES = "https://api.bgm.tv/v0/episodes"
+BANGUMI_SEARCH = "https://api.bgm.tv/v0/search/subjects"
+BANGUMI_NAME = "Bangumi 番组计划"
+BANGUMI_EPISODE_PAGE = 100
+BANGUMI_CHECK_LIMIT = 32
+BANGUMI_CHECK_BATCH = 4
+BANGUMI_CHECK_TIMEOUT = 10
+BANGUMI_EPISODE_TTL = 45 * 60
+BANGUMI_ANNUAL_TTL = 6 * 60 * 60
 BILIBILI_HOTWORDS = "https://s.search.bilibili.com/main/hotword"
 WORLD_NEWS = "https://60s.viki.moe/v2/60s"
 ITHOME_RSS = "https://www.ithome.com/rss/"
 HITOKOTO = "https://v1.hitokoto.cn/"
 
-USER_AGENT = (
-    "MisakiDaily/1.0 (+https://github.com/Whereis-Alice/astrbot_plugin_misaki_daily)"
-)
+USER_AGENT = "Whereis-Alice/MisakiDaily/1.0.3 (+https://github.com/Whereis-Alice/astrbot_plugin_misaki_daily)"
 SOURCE_TIMEOUT = aiohttp.ClientTimeout(total=7, connect=3, sock_read=4)
 COVER_TIMEOUT = aiohttp.ClientTimeout(total=4, connect=2, sock_read=3)
 COVER_BATCH_TIMEOUT = 5
 SOURCE_LIMIT = 1024 * 1024
 COVER_LIMIT = 256 * 1024
 COVER_HOSTS = frozenset({"lain.bgm.tv", "lain.bangumi.tv", "lain.chii.in"})
-BANGUMI_HOSTS = frozenset({"bgm.tv", "bangumi.tv", "chii.in"})
 BILIBILI_HOSTS = frozenset({"www.bilibili.com", "search.bilibili.com"})
 ITHOME_HOSTS = frozenset({"www.ithome.com", "m.ithome.com", "ithome.com"})
 NEWS_HOSTS = frozenset({"mp.weixin.qq.com", "60s.viki.moe"})
@@ -42,7 +50,8 @@ TEXT_CONTROLS = re.compile(
     r"[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ud800-\udfff\ufeff]"
 )
 COVER_PATH = re.compile(
-    r"/pic/cover/[lmcsg]/[a-zA-Z0-9/_-]+\.(?:jpe?g|png|webp)", re.IGNORECASE
+    r"(?:/r/(?:100|200|400|800))?/pic/cover/[lmcsg]/[a-zA-Z0-9/_-]+\.(?:jpe?g|png|webp)",
+    re.IGNORECASE,
 )
 NUMBERED_PREFIX = re.compile(r"^\d+[.、]\s*")
 
@@ -128,6 +137,15 @@ def _cover_link(value: object) -> str:
     return link
 
 
+def _air_date(value: object) -> date | None:
+    if not isinstance(value, str) or len(value) != 10:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def _object(value: object) -> dict:
     return value if isinstance(value, dict) else {}
 
@@ -178,12 +196,16 @@ class DailySources:
         session: aiohttp.ClientSession,
         bangumi_proxy: str = "",
         show_covers: bool = False,
+        uapi_token: str = "",
     ) -> None:
         self.session = session
         self.bangumi_proxy = _proxy_url(bangumi_proxy.strip())
         self.show_covers = show_covers
+        self._uapi_token = uapi_token.strip()
         self._request_slots = asyncio.Semaphore(6)
         self._cover_slots = asyncio.Semaphore(3)
+        self._episode_cache: dict[int, tuple[float, frozenset[date]]] = {}
+        self._annual_cache: tuple[date, float, list] | None = None
 
     async def collect(
         self,
@@ -220,24 +242,28 @@ class DailySources:
         proxy: str | None = None,
         as_cover: bool = False,
         referer: str = "",
+        json_body: dict | None = None,
     ) -> bytes:
         headers = {"User-Agent": USER_AGENT}
         if referer:
             headers["Referer"] = referer
+        if self._uapi_token and url.startswith(f"{UAPI}/"):
+            headers["Authorization"] = f"Bearer {self._uapi_token}"
         limit = COVER_LIMIT if as_cover else SOURCE_LIMIT
         timeout = COVER_TIMEOUT if as_cover else SOURCE_TIMEOUT
 
-        async with (
-            self._request_slots,
-            self.session.get(
-                url,
-                params=params,
-                proxy=proxy,
-                headers=headers,
-                timeout=timeout,
-                allow_redirects=False,
-            ) as response,
-        ):
+        request_args = {
+            "params": params,
+            "proxy": proxy,
+            "headers": headers,
+            "timeout": timeout,
+            "allow_redirects": False,
+        }
+        request = self.session.get
+        if json_body is not None:
+            request = self.session.post
+            request_args["json"] = json_body
+        async with self._request_slots, request(url, **request_args) as response:
             if response.status != 200:
                 raise SourceResponseError(f"HTTP {response.status}")
             if as_cover and response.content_type not in IMAGE_TYPES:
@@ -258,67 +284,215 @@ class DailySources:
         params: dict[str, str] | None = None,
         proxy: str | None = None,
         referer: str = "",
+        json_body: dict | None = None,
     ) -> object:
-        body = await self._read(url, params=params, proxy=proxy, referer=referer)
+        body = await self._read(
+            url, params=params, proxy=proxy, referer=referer, json_body=json_body
+        )
         return json.loads(body)
+
+    def _bangumi_routes(self, proxy: str | None = None) -> tuple[str | None, ...]:
+        if proxy is None and self.bangumi_proxy:
+            return None, self.bangumi_proxy
+        return (proxy,)
+
+    async def _bangumi_json(
+        self,
+        url: str,
+        *,
+        proxy: str | None,
+        params: dict[str, str],
+        json_body: dict | None = None,
+    ) -> object:
+        try:
+            return await self._json(
+                url, params=params, proxy=proxy, json_body=json_body
+            )
+        except SOURCE_ERRORS:
+            if proxy is not None or not self.bangumi_proxy:
+                raise
+        return await self._json(
+            url, params=params, proxy=self.bangumi_proxy, json_body=json_body
+        )
 
     async def _download_cover(self, url: str, proxy: str | None) -> str:
         if not url:
             return ""
         async with self._cover_slots:
-            try:
-                blob = await self._read(url, as_cover=True, proxy=proxy)
-                return await asyncio.to_thread(_encode_cover, blob)
-            except (*SOURCE_ERRORS, OSError, Image.DecompressionBombError):
-                return ""
+            for route in self._bangumi_routes(proxy):
+                try:
+                    blob = await self._read(url, as_cover=True, proxy=route)
+                    return await asyncio.to_thread(_encode_cover, blob)
+                except (*SOURCE_ERRORS, OSError, Image.DecompressionBombError):
+                    continue
+        return ""
 
     async def _anime(self, day: date, count: int) -> Section:
-        source = "Bangumi 番组计划"
-        proxies = (None, self.bangumi_proxy) if self.bangumi_proxy else (None,)
-        for proxy in proxies:
+        for proxy in self._bangumi_routes():
             try:
                 return await self._anime_from_calendar(day, count, proxy)
             except SOURCE_ERRORS as error:
-                failed = _error(source, error)
+                failed = _error(BANGUMI_NAME, error)
         return failed
 
+    async def _annual_subjects(self, day: date, proxy: str | None) -> list:
+        cached = self._annual_cache
+        if cached and cached[0] == day and monotonic() < cached[1]:
+            return cached[2]
+        try:
+            data = _object(
+                await self._bangumi_json(
+                    BANGUMI_SEARCH,
+                    params={"limit": "20"},
+                    proxy=proxy,
+                    json_body={
+                        "keyword": "",
+                        "sort": "heat",
+                        "filter": {
+                            "type": [2],
+                            "tag": ["年番"],
+                            "air_date": [f">={day - timedelta(days=550)}", f"<={day}"],
+                        },
+                    },
+                )
+            )
+            subjects = _array(data.get("data"))
+        except SOURCE_ERRORS as error:
+            _error("Bangumi 年番补充检索", error)
+            return []
+        self._annual_cache = day, monotonic() + BANGUMI_ANNUAL_TTL, subjects
+        return subjects
+
+    async def _episode_dates(
+        self, subject_id: int, proxy: str | None
+    ) -> frozenset[date]:
+        cached = self._episode_cache.get(subject_id)
+        if cached and monotonic() < cached[0]:
+            return cached[1]
+
+        params = {
+            "subject_id": str(subject_id),
+            "type": "0",
+            "limit": str(BANGUMI_EPISODE_PAGE),
+        }
+        response = _object(
+            await self._bangumi_json(BANGUMI_EPISODES, params=params, proxy=proxy)
+        )
+        episodes = _array(response.get("data"))
+        total = response.get("total")
+        if type(total) is int and total > len(episodes) and total <= 100_000:
+            # Check the newest page of very long titles without scanning their full history.
+            offset = str(max(0, total - BANGUMI_EPISODE_PAGE))
+            tail = _object(
+                await self._bangumi_json(
+                    BANGUMI_EPISODES, params={**params, "offset": offset}, proxy=proxy
+                )
+            )
+            episodes += _array(tail.get("data"))
+
+        dates = frozenset(
+            airdate
+            for episode in map(_object, episodes)
+            if episode.get("type") == 0
+            and (airdate := _air_date(episode.get("airdate"))) is not None
+        )
+        if len(self._episode_cache) >= 200:
+            self._episode_cache.pop(next(iter(self._episode_cache)))
+        self._episode_cache[subject_id] = monotonic() + BANGUMI_EPISODE_TTL, dates
+        return dates
+
+    async def _anime_item(
+        self,
+        entry: dict,
+        day: date,
+        proxy: str | None,
+    ) -> tuple[Headline, str] | None:
+        title = _text(entry.get("name_cn"), 90) or _text(entry.get("name"), 90)
+        if not title:
+            return None
+        subject_id = entry.get("id")
+        premiere = _air_date(entry.get("air_date")) or _air_date(entry.get("date"))
+        try:
+            dates = await self._episode_dates(subject_id, proxy)
+        except SOURCE_ERRORS:
+            if premiere != day:
+                raise
+            dates = frozenset()
+        if day not in dates and (dates or premiere != day):
+            return None
+
+        cover = ""
+        if self.show_covers:
+            images = _object(entry.get("images"))
+            cover = next(
+                (
+                    link
+                    for key in ("small", "medium", "common", "large")
+                    if (link := _cover_link(images.get(key)))
+                ),
+                "",
+            )
+        return _headline(title, url=f"https://bgm.tv/subject/{subject_id}"), cover
+
     async def _anime_from_calendar(
-        self, day: date, count: int, proxy: str | None
+        self,
+        day: date,
+        count: int,
+        proxy: str | None,
     ) -> Section:
         calendar = _array(await self._json(BANGUMI_CALENDAR, proxy=proxy))
-        records = next(
+        weekly = next(
             (
-                entry
+                _array(entry.get("items"))
                 for entry in map(_object, calendar)
                 if _object(entry.get("weekday")).get("id") == day.isoweekday()
             ),
-            None,
+            [],
         )
-        items: list[Headline] = []
-        cover_links: list[str] = []
-        if records is not None:
-            for entry in map(_object, _array(records.get("items"))):
-                title = _text(entry.get("name_cn"), 90) or _text(entry.get("name"), 90)
-                if not title:
-                    continue
-                subject_id = entry.get("id")
-                url = (
-                    f"https://bgm.tv/subject/{subject_id}"
-                    if type(subject_id) is int and 0 < subject_id < 2**64
-                    else ""
-                )
-                url = url or _public_link(entry.get("url"), BANGUMI_HOSTS)
-                items.append(_headline(title, url=url))
-                if self.show_covers:
-                    images = _object(entry.get("images"))
-                    cover_links.append(
-                        _cover_link(images.get("medium"))
-                        or _cover_link(images.get("common"))
-                        or _cover_link(images.get("small"))
+        annual = list(map(_object, await self._annual_subjects(day, proxy)))
+        regular_weekday = [
+            entry
+            for entry in annual
+            if (premiere := _air_date(entry.get("date")))
+            and premiere.isoweekday() == day.isoweekday()
+        ]
+
+        candidates = {}
+        for entry in map(_object, [*regular_weekday, *weekly, *annual]):
+            subject_id = entry.get("id")
+            if type(subject_id) is not int or not 0 < subject_id < 2**64:
+                continue
+            premiere = _air_date(entry.get("air_date")) or _air_date(entry.get("date"))
+            if premiere is None or premiere <= day:
+                candidates.setdefault(subject_id, entry)
+
+        matches: list[tuple[Headline, str]] = []
+        incomplete = False
+        try:
+            async with asyncio.timeout(BANGUMI_CHECK_TIMEOUT):
+                for batch in batched(
+                    list(candidates.values())[:BANGUMI_CHECK_LIMIT], BANGUMI_CHECK_BATCH
+                ):
+                    results = await asyncio.gather(
+                        *(self._anime_item(entry, day, proxy) for entry in batch),
+                        return_exceptions=True,
                     )
-                if len(items) >= count:
-                    break
-        if cover_links:
+                    for result in results:
+                        if isinstance(result, SOURCE_ERRORS):
+                            incomplete = True
+                        elif isinstance(result, BaseException):
+                            raise result
+                        elif result is not None:
+                            matches.append(result)
+                    if len(matches) >= count:
+                        break
+        except TimeoutError:
+            incomplete = True
+
+        if incomplete and not matches:
+            return _error(BANGUMI_NAME, SourceResponseError("分集日期暂时无法核对"))
+        matches = matches[:count]
+        if self.show_covers and any(cover for _, cover in matches):
 
             async def populate_cover(item: Headline, url: str) -> None:
                 item["cover"] = await self._download_cover(url, proxy)
@@ -326,14 +500,11 @@ class DailySources:
             try:
                 async with asyncio.timeout(COVER_BATCH_TIMEOUT):
                     await asyncio.gather(
-                        *(
-                            populate_cover(item, url)
-                            for item, url in zip(items, cover_links, strict=True)
-                        )
+                        *(populate_cover(item, url) for item, url in matches)
                     )
             except TimeoutError:
                 LOGGER.debug("美咲日报番剧封面下载已到时限，保留已取得的封面")
-        return _section("Bangumi 番组计划", items)
+        return _section(BANGUMI_NAME, [item for item, _ in matches])
 
     async def _uapi_hotboard(
         self, type_name: str, count: int, hosts: frozenset[str]

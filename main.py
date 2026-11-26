@@ -55,6 +55,7 @@ class MisakiDailyPlugin(Star):
             self._session,
             bangumi_proxy=str(self.config.get("bangumi_proxy", "")).strip(),
             show_covers=bool(self.config.get("show_anime_covers", True)),
+            uapi_token=str(self.config.get("uapi_token") or ""),
         )
         try:
             self._portrait_path = (
@@ -265,8 +266,12 @@ class MisakiDailyPlugin(Star):
                 if not provider:
                     provider = await self.context.get_current_chat_provider_id(origin)
                 if provider:
+                    persona = (
+                        await self.context.persona_manager.get_default_persona_v3()
+                    )
                     result = await self.context.llm_generate(
                         chat_provider_id=provider,
+                        system_prompt=persona.get("prompt") or None,
                         prompt=f"今天是 {day}，今日节日或周末提示为：{festival}。"
                         "为中文群聊的《美咲日报》写一句友好的简短招呼，50 字以内。仅输出这句话，不加引号。",
                     )

@@ -10,6 +10,8 @@ from PIL import Image
 
 from sources import (
     BANGUMI_CALENDAR,
+    BANGUMI_EPISODES,
+    BANGUMI_SEARCH,
     BILIBILI_HOTWORDS,
     COVER_LIMIT,
     HITOKOTO,
@@ -89,15 +91,29 @@ class TestDailySources(unittest.IsolatedAsyncioTestCase):
                         "name_cn": "周四番剧",
                         "name": "原名",
                         "id": 42,
+                        "air_date": TODAY.isoformat(),
                         "images": {"medium": cover},
                     },
-                    {"name": "无封面", "images": {"common": "https://127.0.0.1/a.png"}},
+                    {
+                        "id": 43,
+                        "name": "无封面",
+                        "air_date": TODAY.isoformat(),
+                        "images": {"common": "https://127.0.0.1/a.png"},
+                    },
                 ],
             },
         ]
         with (
             patch.object(
-                sources, "_json", side_effect=[TimeoutError, calendar]
+                sources,
+                "_json",
+                side_effect=[
+                    TimeoutError,
+                    calendar,
+                    {"data": []},
+                    {"data": []},
+                    {"data": []},
+                ],
             ) as request,
             patch.object(
                 sources,
@@ -114,7 +130,8 @@ class TestDailySources(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["items"][0]["url"], "https://bgm.tv/subject/42")
         self.assertEqual(result["items"][1]["cover"], "")
         self.assertEqual(
-            [c.kwargs["proxy"] for c in request.await_args_list], [None, proxy]
+            [c.kwargs["proxy"] for c in request.await_args_list],
+            [None, proxy, proxy, proxy, proxy],
         )
         self.assertEqual(
             [call.args for call in download.await_args_list],
@@ -131,13 +148,17 @@ class TestDailySources(unittest.IsolatedAsyncioTestCase):
                 "weekday": {"id": TODAY.isoweekday()},
                 "items": [
                     {
+                        "id": 41,
                         "name": "已取得",
+                        "air_date": TODAY.isoformat(),
                         "images": {
                             "medium": "https://lain.bgm.tv/pic/cover/m/completed.jpg"
                         },
                     },
                     {
+                        "id": 42,
                         "name": "未取得",
+                        "air_date": TODAY.isoformat(),
                         "images": {
                             "medium": "https://lain.bgm.tv/pic/cover/m/slow.jpg"
                         },
@@ -153,7 +174,11 @@ class TestDailySources(unittest.IsolatedAsyncioTestCase):
 
         with (
             patch("sources.COVER_BATCH_TIMEOUT", 0.05),
-            patch.object(sources, "_json", return_value=calendar),
+            patch.object(
+                sources,
+                "_json",
+                side_effect=[calendar, {"data": []}, {"data": []}, {"data": []}],
+            ),
             patch.object(sources, "_download_cover", side_effect=cover_for),
         ):
             result = await sources._anime(TODAY, 4)
@@ -162,6 +187,139 @@ class TestDailySources(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(result["items"][0]["cover"])
         self.assertFalse(result["items"][1]["cover"])
+
+    async def test_bangumi_uses_episode_dates_and_discovers_cross_season_annuals(
+        self,
+    ) -> None:
+        sunday = date(2026, 11, 29)
+        movie = {
+            "id": 577237,
+            "name_cn": "仙逆剧场版 弑仙之战",
+            "air_date": "2026-10-01",
+        }
+        annual = {"id": 611077, "name_cn": "名侦探光之美少女！", "date": "2026-02-01"}
+        thursday = {"id": 576783, "name_cn": "狂王 第2季", "air_date": "2026-10-08"}
+        extra_only = {"id": 2, "name": "只有特别收录", "air_date": "2026-10-01"}
+        undated = {"id": 3, "name": "本周日期待定", "air_date": "2026-10-01"}
+        batches = [
+            {
+                "weekday": {"id": 4},
+                "items": [movie, extra_only, undated, thursday, thursday],
+            },
+            {"weekday": {"id": 7}, "items": []},
+        ]
+        episodes = {
+            "577237": [{"type": 0, "airdate": ""}],
+            "2": [{"type": 1, "airdate": TODAY.isoformat()}],
+            "3": [{"type": 0, "airdate": "2026-11-19"}, {"type": 0, "airdate": ""}],
+            "576783": [{"type": 0, "airdate": TODAY.isoformat()}],
+            "611077": [{"type": 0, "airdate": sunday.isoformat()}],
+        }
+
+        async def get_json(url, **kwargs):
+            if url == BANGUMI_CALENDAR:
+                return batches
+            if url == BANGUMI_SEARCH:
+                self.assertEqual(kwargs["json_body"]["filter"]["tag"], ["年番"])
+                return {"data": [annual]}
+            if url == BANGUMI_EPISODES:
+                self.assertEqual(kwargs["params"]["type"], "0")
+                return {"data": episodes[kwargs["params"]["subject_id"]]}
+            raise AssertionError(url)
+
+        with patch.object(self.sources, "_json", side_effect=get_json) as request:
+            thursday_result = await self.sources._anime(TODAY, 8)
+            sunday_result = await self.sources._anime(sunday, 1)
+        self.assertEqual(
+            [item["title"] for item in thursday_result["items"]], ["狂王 第2季"]
+        )
+        self.assertEqual(
+            sunday_result["items"][0]["url"], "https://bgm.tv/subject/611077"
+        )
+        episode_calls = [
+            c.kwargs["params"]["subject_id"]
+            for c in request.await_args_list
+            if c.args[0] == BANGUMI_EPISODES
+        ]
+        self.assertEqual(episode_calls.count("611077"), 1)
+        self.assertEqual(episode_calls.count("576783"), 1)
+
+    async def test_bangumi_with_episode_service_failure_keeps_only_exact_premiere(
+        self,
+    ) -> None:
+        premiere = {"id": 7, "name": "今日首播", "air_date": TODAY.isoformat()}
+        unverified = {"id": 8, "name": "之前播出的剧集", "air_date": "2026-10-01"}
+        calendar = {"weekday": {"id": 4}, "items": [premiere, unverified]}
+
+        async def get_json(url, **kwargs):
+            if url == BANGUMI_CALENDAR:
+                return [calendar]
+            if url == BANGUMI_SEARCH:
+                return {"data": []}
+            if url == BANGUMI_EPISODES:
+                raise TimeoutError
+            raise AssertionError(url)
+
+        with patch.object(self.sources, "_json", side_effect=get_json):
+            result = await self.sources._anime(TODAY, 4)
+            calendar["items"] = [unverified]
+            with self.assertLogs("sources", "WARNING"):
+                empty_result = await self.sources._anime(TODAY, 4)
+        self.assertEqual([item["title"] for item in result["items"]], ["今日首播"])
+        self.assertEqual(empty_result["status"], "error")
+
+    async def test_bangumi_checks_episode_dates_through_proxy_after_calendar_succeeds(
+        self,
+    ) -> None:
+        proxy = "http://127.0.0.1:7890"
+        sources = DailySources(self.session, bangumi_proxy=proxy)
+        title = {"id": 42, "name": "本日更新", "air_date": "2026-10-01"}
+        calendar = [{"weekday": {"id": TODAY.isoweekday()}, "items": [title]}]
+
+        async def get_json(url, **kwargs):
+            if url == BANGUMI_CALENDAR:
+                return calendar
+            if url == BANGUMI_SEARCH:
+                return {"data": []}
+            if kwargs["proxy"] is None:
+                raise TimeoutError
+            return {"data": [{"type": 0, "airdate": TODAY.isoformat()}]}
+
+        with patch.object(sources, "_json", side_effect=get_json) as request:
+            result = await sources._anime(TODAY, 4)
+        self.assertEqual(result["items"][0]["title"], "本日更新")
+        episode_calls = [
+            call for call in request.await_args_list if call.args[0] == BANGUMI_EPISODES
+        ]
+        self.assertEqual(
+            [call.kwargs["proxy"] for call in episode_calls], [None, proxy]
+        )
+
+    async def test_bangumi_prefers_dated_episode_over_conflicting_premiere(
+        self,
+    ) -> None:
+        premiere = {"id": 7, "name": "已改期的新番", "air_date": TODAY.isoformat()}
+        calendar = [{"weekday": {"id": TODAY.isoweekday()}, "items": [premiere]}]
+        entries = {"data": [{"type": 0, "airdate": "2026-11-27"}]}
+        with patch.object(
+            self.sources, "_json", side_effect=[calendar, {"data": []}, entries]
+        ):
+            result = await self.sources._anime(TODAY, 4)
+        self.assertEqual(result["status"], "empty")
+
+    async def test_bangumi_checks_latest_page_and_caches_dates_for_long_series(
+        self,
+    ) -> None:
+        initial = {"total": 500, "data": [{"type": 0, "airdate": "2020-01-02"}]}
+        tail = {"total": 500, "data": [{"type": 0, "airdate": TODAY.isoformat()}]}
+        with patch.object(
+            self.sources, "_json", side_effect=[initial, tail]
+        ) as request:
+            dates = await self.sources._episode_dates(42, None)
+            self.assertIn(TODAY, dates)
+            self.assertEqual(await self.sources._episode_dates(42, None), dates)
+        self.assertEqual(request.await_count, 2)
+        self.assertEqual(request.await_args_list[1].kwargs["params"]["offset"], "400")
 
     async def test_bilibili_filters_unsafe_links_and_limits_titles(self) -> None:
         data = {
@@ -317,6 +475,40 @@ class TestDailySources(unittest.IsolatedAsyncioTestCase):
                 await self.sources._download_cover("https://lain.bgm.tv/a.jpg", None),
                 "",
             )
+
+    async def test_uapi_token_is_optional_and_limited_to_uapi_requests(self) -> None:
+        class Response:
+            status = 200
+            content_length = None
+
+            @property
+            def content(self):
+                return self
+
+            async def iter_chunked(self, size):
+                yield b"{}"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *exc):
+                return False
+
+        sources = DailySources(self.session, uapi_token=" test-token ")
+        with patch.object(self.session, "get", return_value=Response()) as request:
+            await self.sources._read(f"{UAPI}/saying")
+            await sources._read(f"{UAPI}/saying")
+            await sources._read(BANGUMI_CALENDAR)
+        self.assertEqual(
+            [
+                call.kwargs["headers"].get("Authorization")
+                for call in request.call_args_list
+            ],
+            [None, "Bearer test-token", None],
+        )
+        self.assertTrue(
+            all(not call.kwargs["allow_redirects"] for call in request.call_args_list)
+        )
 
 
 if __name__ == "__main__":
