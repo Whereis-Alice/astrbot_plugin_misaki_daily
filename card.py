@@ -33,13 +33,12 @@ SECTION_TITLES = {
 }
 LABELS = {"calendar": "摸鱼日历", **SECTION_TITLES}
 ICONS = {
-    "calendar": "历",
-    "hot": "TV",
-    "anime": "番",
-    "news": "闪",
-    "tech": "IT",
-    "quote": "言",
-    "word": "EN",
+    "calendar": "fish.png",
+    "hot": "bilibili.png",
+    "anime": "bgm.png",
+    "news": "60.png",
+    "tech": "it.png",
+    "quote": "hitokoto.png",
 }
 STATUS_TEXT = {"empty": "今天暂无条目", "error": "数据源暂不可用"}
 _NO_LINE_START = '，。；、：！？》〉」』】〕）］｝”’…·,.?!)":;'
@@ -53,6 +52,14 @@ def _font(size: int) -> ImageFont.FreeTypeFont:
 @lru_cache(maxsize=1)
 def _phonetic_font() -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(str(ASSETS / "NotoSans-Latin.ttf"), 23)
+
+
+@lru_cache(maxsize=len(ICONS))
+def _section_icon(key: str) -> Image.Image:
+    with Image.open(ASSETS / "icons" / ICONS[key]) as icon:
+        return ImageOps.contain(
+            icon.convert("RGBA"), (31, 31), Image.Resampling.LANCZOS
+        )
 
 
 def _text(
@@ -116,19 +123,14 @@ def _frame(
     draw.rounded_rectangle(
         (19, 1, label_right, 55), radius=15, fill=LABEL, outline=EDGE, width=3
     )
-    icon = ICONS[key]
-    icon_bg = "#E3EFF2" if key == "hot" else "#F1E1ED"
-    icon_ink = "#3B7385" if key == "hot" else ACCENT
-    draw.rounded_rectangle((31, 12, 62, 43), radius=7, fill=icon_bg)
-    _text(
-        draw,
-        (47, 28),
-        icon,
-        14 if icon.isascii() else 19,
-        icon_ink,
-        anchor="mm",
-        weight=1,
-    )
+    if key in ICONS:
+        icon = _section_icon(key)
+        image.paste(
+            icon, (31 + (31 - icon.width) // 2, 12 + (31 - icon.height) // 2), icon
+        )
+    else:
+        draw.rounded_rectangle((31, 12, 62, 43), radius=7, fill="#F1E1ED")
+        _text(draw, (47, 28), "EN", 14, ACCENT, anchor="mm", weight=1)
     _text(draw, (72, 16), label, 27, ACCENT, weight=1)
     if source and label_right + _font(17).getlength(source) + 45 < width:
         _text(draw, (width - 22, 43), source, 17, MUTED, anchor="rt")
@@ -177,10 +179,11 @@ def _list_panel(
         return image
 
     y = 80
-    for row in rows:
+    for index, row in enumerate(rows):
         if hot:
-            draw.rounded_rectangle((24, y + 1, 54, y + 31), radius=7, fill="#BC7195")
-            _text(draw, (39, y + 16), "热", 19, "#FFFFFF", anchor="mm")
+            color, label = ("#FF6868", "热") if index < 4 else ("#9C5529", "荐")
+            draw.rounded_rectangle((24, y + 1, 54, y + 31), radius=7, fill=color)
+            _text(draw, (39, y + 16), label, 19, "#FFFFFF", anchor="mm")
         else:
             draw.ellipse((27, y + 11, 34, y + 18), fill=ACCENT)
         for line in row:

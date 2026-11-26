@@ -64,7 +64,7 @@ AI 问候默认关闭。开启后可指定聊天模型，或留空使用目标�
 
 ## 许可与致谢
 
-- 代码基于 AGPL-3.0 发布。美咲日报由真寻日报独立衍生，感谢原作者 Huahuatgc、维护者 luminacry，以及更早的 NoneBot 日报项目。[许可证](LICENSE) · [上游基线](https://github.com/luminacry/astrbot_plugin_zhenxunribao/tree/08169bec0a4032bf9af2e41fd544d1912a4f607d) · [nonebot-plugin-zxreport](https://github.com/HibiKier/nonebot-plugin-zxreport)
+- 代码基于 AGPL-3.0 发布。美咲日报由真寻日报独立衍生，六个原版栏目图标沿用上游资源。感谢原作者 Huahuatgc、维护者 luminacry，以及更早的 NoneBot 日报项目。[许可证](LICENSE) · [上游基线](https://github.com/luminacry/astrbot_plugin_zhenxunribao/tree/08169bec0a4032bf9af2e41fd544d1912a4f607d) · [nonebot-plugin-zxreport](https://github.com/HibiKier/nonebot-plugin-zxreport)
 - 内置 Noto Sans SC 及用于英语音标的 Noto Sans 子集均使用 SIL Open Font License 1.1。[Noto Sans SC 许可](assets/OFL.txt) · [Noto Sans 许可](assets/OFL-NotoSans.txt)
 - 美咲日报是非官方插件。鸢泽美咲出自 sprite 的游戏《苍之彼方的四重奏》，角色相关权利归原权利人。[官方角色页](https://sprite.net/characters/misaki) · [二次创作指南](https://sprite.net/pages/guidelines)
 
