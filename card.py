@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import logging
 import re
 from functools import lru_cache
 from io import BytesIO
@@ -10,7 +9,6 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 ASSETS = Path(__file__).resolve().parent / "assets"
-LOGGER = logging.getLogger(__name__)
 WIDTH = 960
 MARGIN = 27
 CONTENT_X = 54
@@ -49,6 +47,11 @@ _NO_LINE_START = '，。；、：！？》〉」』】〕）］｝”’…·,.?
 @lru_cache(maxsize=18)
 def _font(size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(str(ASSETS / "NotoSansSC-Regular.otf"), size)
+
+
+@lru_cache(maxsize=1)
+def _masthead_font() -> ImageFont.FreeTypeFont:
+    return ImageFont.truetype(str(ASSETS / "DailyMasthead.ttf"), 164)
 
 
 @lru_cache(maxsize=1)
@@ -280,33 +283,12 @@ def _feature(key: str, section: dict) -> Image.Image:
     return image
 
 
-def _portrait(path: Path | None) -> Image.Image | None:
-    if path is None or not path.is_file():
-        return None
-    try:
-        if path.stat().st_size > 8 * 1024 * 1024:
-            raise ValueError("file too large")
-        with Image.open(path, formats=("WEBP", "PNG", "JPEG")) as image:
-            if image.width * image.height > 12_000_000:
-                raise ValueError("image too large")
-            portrait = image.convert("RGBA")
-            portrait = portrait.crop(
-                portrait.getbbox(alpha_only=True) or (0, 0, *portrait.size)
-            )
-            portrait.thumbnail((210, 215), Image.Resampling.LANCZOS)
-            return portrait
-    except (OSError, ValueError, Image.DecompressionBombError):
-        LOGGER.warning("[美咲日报] 自定义立绘读取失败")
-        return None
-
-
-def _masthead(canvas: Image.Image, report: dict, custom_portrait: Path | None) -> None:
+def _masthead(canvas: Image.Image, report: dict, portrait: Image.Image | None) -> None:
     draw = ImageDraw.Draw(canvas)
     for y in range(59, 307, 9):
         for x in range(57 + (y % 2) * 4, WIDTH - 59, 9):
             draw.point((x, y), fill=RULE)
 
-    portrait = _portrait(custom_portrait) or _portrait(ASSETS / "portrait.webp")
     if portrait is not None:
         canvas.paste(
             portrait,
@@ -333,27 +315,9 @@ def _masthead(canvas: Image.Image, report: dict, custom_portrait: Path | None) -
             [(149, 183), (225, 122), (164, 194)], fill="#70A784", width=3, joint="curve"
         )
 
-    title_xy = (468, 92)
-    title_fill = "#548C68"
-    font = _font(149)
-    draw.text(
-        (title_xy[0] + 7, title_xy[1] + 8),
-        "日报",
-        fill="#367054",
-        font=font,
-        anchor="mt",
-        stroke_width=9,
-    )
-    draw.text(
-        title_xy,
-        "日报",
-        fill=title_fill,
-        font=font,
-        anchor="mt",
-        stroke_width=9,
-        stroke_fill=LABEL,
-    )
-    draw.text(title_xy, "日报", fill=title_fill, font=font, anchor="mt", stroke_width=4)
+    title_font = _masthead_font()
+    for x, char in zip((380, 556), "日报", strict=True):
+        draw.text((x, 86), char, font=title_font, fill=ACCENT, anchor="mt")
 
     date_x = WIDTH - CONTENT_X - 205
     right = WIDTH - CONTENT_X
@@ -390,7 +354,7 @@ def _masthead(canvas: Image.Image, report: dict, custom_portrait: Path | None) -
     )
 
 
-def render_card(report: dict, custom_portrait: Path | None = None) -> bytes:
+def render_card(report: dict, portrait: Image.Image | None = None) -> bytes:
     """Render the portrait, calendar masthead and framed edition as a local JPEG."""
     festivals = report["calendar"]["festivals"]
     sections = report["sections"]
@@ -427,7 +391,7 @@ def render_card(report: dict, custom_portrait: Path | None = None) -> bytes:
     draw.rounded_rectangle(
         (MARGIN, MARGIN, WIDTH - MARGIN - 1, height - MARGIN - 1), radius=31, fill=PAPER
     )
-    _masthead(canvas, report, custom_portrait)
+    _masthead(canvas, report, portrait)
     y = start
     for row in rows:
         x = CONTENT_X

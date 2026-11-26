@@ -1,7 +1,6 @@
 import unittest
 from datetime import date
 from io import BytesIO
-from pathlib import Path
 
 from PIL import Image
 
@@ -43,16 +42,17 @@ def sample_report():
 
 
 class CardTests(unittest.TestCase):
-    def test_render_falls_back_from_an_unreadable_custom_portrait(self):
+    def test_render_without_a_portrait_keeps_the_image_available(self):
         report = sample_report()
-        unreadable = Path(__file__)
-        result = render_card(report, unreadable)
-        self.assertEqual(result, render_card(report))
+        result = render_card(report)
         with Image.open(BytesIO(result)) as image:
             self.assertEqual(image.format, "JPEG")
             self.assertEqual(image.width, 960)
             self.assertGreater(image.height, image.width)
             image.verify()
+
+        portrait = Image.new("RGBA", (210, 215), "purple")
+        self.assertNotEqual(result, render_card(report, portrait))
 
     def test_links_keep_title_url_pairs_and_deduplicate_edition(self):
         report = sample_report()

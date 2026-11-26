@@ -84,7 +84,7 @@
     "type": "list",
     "description": "接收推送的群聊会话标识",
     "default": [],
-    "hint": "管理员在目标群发送 /美咲日报会话，逐项粘贴完整返回值。"
+    "hint": "管理员在目标群发送 /日报会话，逐项粘贴完整返回值。"
   },
   "push_format": {
     "type": "string",

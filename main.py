@@ -15,6 +15,7 @@ from astrbot.api.star import Context, Star, StarTools
 
 from .calendar_data import build_calendar
 from .card import render_card, render_text_pages
+from .portrait import load_portrait
 from .schedule import group_origins, next_run
 from .sources import DailySources
 
@@ -40,8 +41,8 @@ class MisakiDailyPlugin(Star):
         self._report_lock = asyncio.Lock()
         self._image_lock = asyncio.Lock()
         self._report_cache: tuple[date, float, dict] | None = None
-        self._image_cache: tuple[dict, str] | None = None
-        self._portrait_path = None
+        self._image_cache: tuple[dict, str, float] | None = None
+        self._data_dir = None
 
     async def initialize(self) -> None:
         if self._session is not None:
@@ -58,9 +59,7 @@ class MisakiDailyPlugin(Star):
             uapi_token=str(self.config.get("uapi_token") or ""),
         )
         try:
-            self._portrait_path = (
-                StarTools.get_data_dir("astrbot_plugin_misaki_daily") / "portrait.webp"
-            )
+            self._data_dir = StarTools.get_data_dir("astrbot_plugin_misaki_daily")
         except (OSError, RuntimeError):
             logger.warning("[美咲日报] 无法读取自定义立绘目录")
 
@@ -93,7 +92,7 @@ class MisakiDailyPlugin(Star):
         self._sources = None
         self._report_cache = self._image_cache = None
 
-    @filter.command("美咲日报")
+    @filter.command("日报")
     async def misaki_daily(self, event: AstrMessageEvent):
         """查看今天的美咲日报。"""
         report = await self._get_report(datetime.now(self.zone).date())
@@ -104,21 +103,21 @@ class MisakiDailyPlugin(Star):
             for page in render_text_pages(report):
                 yield event.plain_result(page).use_t2i(False)
 
-    @filter.command("美咲日报文字")
+    @filter.command("日报文字")
     async def misaki_daily_text(self, event: AstrMessageEvent):
         """查看适合低带宽及文字阅读的日报。"""
         report = await self._get_report(datetime.now(self.zone).date())
         for page in render_text_pages(report):
             yield event.plain_result(page).use_t2i(False)
 
-    @filter.command("美咲日报来源")
+    @filter.command("日报来源")
     async def misaki_daily_links(self, event: AstrMessageEvent):
         """获取本期栏目可用的原文链接。"""
         report = await self._get_report(datetime.now(self.zone).date())
         for page in render_text_pages(report, links_only=True):
             yield event.plain_result(page).use_t2i(False)
 
-    @filter.command("美咲日报会话")
+    @filter.command("日报会话")
     @filter.permission_type(filter.PermissionType.ADMIN)
     async def misaki_daily_session(self, event: AstrMessageEvent):
         """查看定时推送所需的当前群聊会话标识。"""
@@ -166,17 +165,21 @@ class MisakiDailyPlugin(Star):
 
     async def _get_image(self, report: dict) -> str:
         async with self._image_lock:
-            if self._image_cache and self._image_cache[0] is report:
-                return self._image_cache[1]
+            cached = self._image_cache
+            if cached and cached[0] is report and monotonic() < cached[2]:
+                return cached[1]
+            assert self._session is not None
+            portrait = await load_portrait(self._session, self._data_dir)
             try:
-                content = await asyncio.to_thread(
-                    render_card, report, self._portrait_path
-                )
+                content = await asyncio.to_thread(render_card, report, portrait)
                 image = base64.b64encode(content).decode("ascii")
             except (OSError, ValueError, RuntimeError):
                 logger.exception("[美咲日报] 图片生成失败，改用文字日报")
                 image = ""
-            self._image_cache = report, image
+            expires = (
+                float("inf") if portrait is not None and image else monotonic() + 120
+            )
+            self._image_cache = report, image, expires
             return image
 
     async def _run_schedule(self, at: time, groups: tuple[str, ...]) -> None:
