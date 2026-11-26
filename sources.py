@@ -1,0 +1,499 @@
+"""Fetch the structured sources used by the daily briefing."""
+
+import asyncio
+import base64
+import io
+import json
+import logging
+import re
+from collections.abc import Awaitable
+from datetime import date
+from typing import Literal, NotRequired, TypedDict
+from urllib.parse import quote, urlsplit, urlunsplit
+from xml.etree import ElementTree
+
+import aiohttp
+from PIL import Image
+
+LOGGER = logging.getLogger(__name__)
+
+UAPI = "https://uapis.cn/api/v1"
+BANGUMI_CALENDAR = "https://api.bgm.tv/calendar"
+BILIBILI_HOTWORDS = "https://s.search.bilibili.com/main/hotword"
+WORLD_NEWS = "https://60s.viki.moe/v2/60s"
+ITHOME_RSS = "https://www.ithome.com/rss/"
+HITOKOTO = "https://v1.hitokoto.cn/"
+
+USER_AGENT = (
+    "MisakiDaily/1.0 (+https://github.com/Whereis-Alice/astrbot_plugin_misaki_daily)"
+)
+SOURCE_TIMEOUT = aiohttp.ClientTimeout(total=7, connect=3, sock_read=4)
+COVER_TIMEOUT = aiohttp.ClientTimeout(total=4, connect=2, sock_read=3)
+COVER_BATCH_TIMEOUT = 5
+SOURCE_LIMIT = 1024 * 1024
+COVER_LIMIT = 256 * 1024
+COVER_HOSTS = frozenset({"lain.bgm.tv", "lain.bangumi.tv", "lain.chii.in"})
+BANGUMI_HOSTS = frozenset({"bgm.tv", "bangumi.tv", "chii.in"})
+BILIBILI_HOSTS = frozenset({"www.bilibili.com", "search.bilibili.com"})
+ITHOME_HOSTS = frozenset({"www.ithome.com", "m.ithome.com", "ithome.com"})
+NEWS_HOSTS = frozenset({"mp.weixin.qq.com", "60s.viki.moe"})
+IMAGE_TYPES = {"image/jpeg", "image/png", "image/webp"}
+TEXT_CONTROLS = re.compile(
+    r"[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\ud800-\udfff\ufeff]"
+)
+COVER_PATH = re.compile(
+    r"/pic/cover/[lmcsg]/[a-zA-Z0-9/_-]+\.(?:jpe?g|png|webp)", re.IGNORECASE
+)
+NUMBERED_PREFIX = re.compile(r"^\d+[.、]\s*")
+
+
+class Headline(TypedDict):
+    title: str
+    url: str
+    cover: str
+    meta: str
+    phonetic: NotRequired[str]
+
+
+class Section(TypedDict):
+    status: Literal["ok", "empty", "error"]
+    source: str
+    items: list[Headline]
+
+
+class SourceResponseError(ValueError):
+    """A response unusable for the requested source."""
+
+
+SOURCE_ERRORS = (
+    aiohttp.ClientError,
+    TimeoutError,
+    ValueError,
+    ElementTree.ParseError,
+    RecursionError,
+)
+
+
+def _text(value: object, limit: int = 180) -> str:
+    if not isinstance(value, str):
+        return ""
+    value = value.encode("utf-8", errors="replace").decode("utf-8")
+    clean = " ".join(TEXT_CONTROLS.sub(" ", value).split())
+    return clean if len(clean) <= limit else clean[: limit - 1].rstrip() + "…"
+
+
+def _public_link(value: object, allowed_hosts: frozenset[str]) -> str:
+    if not isinstance(value, str) or len(value) > 1024:
+        return ""
+    if (
+        not value.isascii()
+        or "\\" in value
+        or any(not 32 < ord(char) < 127 for char in value)
+    ):
+        return ""
+    try:
+        parts = urlsplit(value)
+    except ValueError:
+        return ""
+    if (
+        parts.scheme not in {"http", "https"}
+        or parts.netloc.lower() not in allowed_hosts
+    ):
+        return ""
+    return urlunsplit(
+        ("https", parts.netloc.lower(), parts.path, parts.query, parts.fragment)
+    )
+
+
+def _proxy_url(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        parts = urlsplit(value)
+        if parts.scheme in {"http", "https"} and parts.hostname and parts.port != 0:
+            return value
+    except ValueError:
+        pass
+    LOGGER.warning("美咲日报忽略了无效的 Bangumi HTTP(S) 代理")
+    return ""
+
+
+def _cover_link(value: object) -> str:
+    link = _public_link(value, COVER_HOSTS)
+    if not link:
+        return ""
+    parts = urlsplit(link)
+    if parts.query or parts.fragment or not COVER_PATH.fullmatch(parts.path):
+        return ""
+    return link
+
+
+def _object(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _array(value: object) -> list:
+    if not isinstance(value, list):
+        raise SourceResponseError("invalid list")
+    return value
+
+
+def _headline(
+    title: str, *, url: str = "", cover: str = "", meta: str = ""
+) -> Headline:
+    return {"title": title, "url": url, "cover": cover, "meta": meta}
+
+
+def _section(source: str, items: list[Headline]) -> Section:
+    return {"status": "ok" if items else "empty", "source": source, "items": items}
+
+
+def _error(source: str, error: Exception) -> Section:
+    # Request exception strings can contain proxy credentials or unsafe upstream text.
+    detail = (
+        str(error) if isinstance(error, SourceResponseError) else type(error).__name__
+    )
+    LOGGER.warning("美咲日报数据源 %s 请求失败（%s）", source, detail)
+    return {"status": "error", "source": source, "items": []}
+
+
+def _encode_cover(blob: bytes) -> str:
+    with Image.open(io.BytesIO(blob), formats=("JPEG", "PNG", "WEBP")) as image:
+        if image.width * image.height > 4_000_000:
+            return ""
+        image.thumbnail((192, 272))
+        output = io.BytesIO()
+        image.convert("RGB").save(output, "JPEG", quality=80, optimize=True)
+    if output.tell() > 32 * 1024:
+        return ""
+    encoded = base64.b64encode(output.getvalue()).decode("ascii")
+    return "data:image/jpeg;base64," + encoded
+
+
+class DailySources:
+    """Fetch independent briefing sections and keep partial upstream failures local."""
+
+    def __init__(
+        self,
+        session: aiohttp.ClientSession,
+        bangumi_proxy: str = "",
+        show_covers: bool = False,
+    ) -> None:
+        self.session = session
+        self.bangumi_proxy = _proxy_url(bangumi_proxy.strip())
+        self.show_covers = show_covers
+        self._request_slots = asyncio.Semaphore(6)
+        self._cover_slots = asyncio.Semaphore(3)
+
+    async def collect(
+        self,
+        day: date,
+        *,
+        anime_count: int,
+        hot_count: int,
+        news_count: int,
+        tech_count: int,
+        show_quote: bool,
+        show_word: bool,
+    ) -> dict[str, Section]:
+        jobs: dict[str, Awaitable[Section]] = {}
+        if anime_count > 0:
+            jobs["anime"] = self._anime(day, min(anime_count, 12))
+        if hot_count > 0:
+            jobs["hot"] = self._hot(min(hot_count, 12))
+        if news_count > 0:
+            jobs["news"] = self._news(day, min(news_count, 12))
+        if tech_count > 0:
+            jobs["tech"] = self._tech(min(tech_count, 12))
+        if show_quote:
+            jobs["quote"] = self._quote()
+        if show_word:
+            jobs["word"] = self._word(day)
+        sections = await asyncio.gather(*jobs.values())
+        return dict(zip(jobs, sections, strict=True))
+
+    async def _read(
+        self,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+        proxy: str | None = None,
+        as_cover: bool = False,
+        referer: str = "",
+    ) -> bytes:
+        headers = {"User-Agent": USER_AGENT}
+        if referer:
+            headers["Referer"] = referer
+        limit = COVER_LIMIT if as_cover else SOURCE_LIMIT
+        timeout = COVER_TIMEOUT if as_cover else SOURCE_TIMEOUT
+
+        async with (
+            self._request_slots,
+            self.session.get(
+                url,
+                params=params,
+                proxy=proxy,
+                headers=headers,
+                timeout=timeout,
+                allow_redirects=False,
+            ) as response,
+        ):
+            if response.status != 200:
+                raise SourceResponseError(f"HTTP {response.status}")
+            if as_cover and response.content_type not in IMAGE_TYPES:
+                raise SourceResponseError("unsupported cover type")
+            if response.content_length is not None and response.content_length > limit:
+                raise SourceResponseError("response too large")
+            buffer = bytearray()
+            async for chunk in response.content.iter_chunked(32 * 1024):
+                if len(buffer) + len(chunk) > limit:
+                    raise SourceResponseError("response too large")
+                buffer.extend(chunk)
+            return bytes(buffer)
+
+    async def _json(
+        self,
+        url: str,
+        *,
+        params: dict[str, str] | None = None,
+        proxy: str | None = None,
+        referer: str = "",
+    ) -> object:
+        body = await self._read(url, params=params, proxy=proxy, referer=referer)
+        return json.loads(body)
+
+    async def _download_cover(self, url: str, proxy: str | None) -> str:
+        if not url:
+            return ""
+        async with self._cover_slots:
+            try:
+                blob = await self._read(url, as_cover=True, proxy=proxy)
+                return await asyncio.to_thread(_encode_cover, blob)
+            except (*SOURCE_ERRORS, OSError, Image.DecompressionBombError):
+                return ""
+
+    async def _anime(self, day: date, count: int) -> Section:
+        source = "Bangumi 番组计划"
+        proxies = (None, self.bangumi_proxy) if self.bangumi_proxy else (None,)
+        for proxy in proxies:
+            try:
+                return await self._anime_from_calendar(day, count, proxy)
+            except SOURCE_ERRORS as error:
+                failed = _error(source, error)
+        return failed
+
+    async def _anime_from_calendar(
+        self, day: date, count: int, proxy: str | None
+    ) -> Section:
+        calendar = _array(await self._json(BANGUMI_CALENDAR, proxy=proxy))
+        records = next(
+            (
+                entry
+                for entry in map(_object, calendar)
+                if _object(entry.get("weekday")).get("id") == day.isoweekday()
+            ),
+            None,
+        )
+        items: list[Headline] = []
+        cover_links: list[str] = []
+        if records is not None:
+            for entry in map(_object, _array(records.get("items"))):
+                title = _text(entry.get("name_cn"), 90) or _text(entry.get("name"), 90)
+                if not title:
+                    continue
+                subject_id = entry.get("id")
+                url = (
+                    f"https://bgm.tv/subject/{subject_id}"
+                    if type(subject_id) is int and 0 < subject_id < 2**64
+                    else ""
+                )
+                url = url or _public_link(entry.get("url"), BANGUMI_HOSTS)
+                items.append(_headline(title, url=url))
+                if self.show_covers:
+                    images = _object(entry.get("images"))
+                    cover_links.append(
+                        _cover_link(images.get("medium"))
+                        or _cover_link(images.get("common"))
+                        or _cover_link(images.get("small"))
+                    )
+                if len(items) >= count:
+                    break
+        if cover_links:
+
+            async def populate_cover(item: Headline, url: str) -> None:
+                item["cover"] = await self._download_cover(url, proxy)
+
+            try:
+                async with asyncio.timeout(COVER_BATCH_TIMEOUT):
+                    await asyncio.gather(
+                        *(
+                            populate_cover(item, url)
+                            for item, url in zip(items, cover_links, strict=True)
+                        )
+                    )
+            except TimeoutError:
+                LOGGER.debug("美咲日报番剧封面下载已到时限，保留已取得的封面")
+        return _section("Bangumi 番组计划", items)
+
+    async def _uapi_hotboard(
+        self, type_name: str, count: int, hosts: frozenset[str]
+    ) -> list[Headline]:
+        data = _object(
+            await self._json(f"{UAPI}/misc/hotboard", params={"type": type_name})
+        )
+        items: list[Headline] = []
+        for entry in map(_object, _array(data.get("list"))):
+            title = _text(entry.get("title"))
+            if not title:
+                continue
+            url = _public_link(entry.get("url"), hosts)
+            items.append(
+                _headline(title, url=url, meta=_text(entry.get("hot_value"), 32))
+            )
+            if len(items) >= count:
+                break
+        return items
+
+    async def _hot(self, count: int) -> Section:
+        source = "UAPI · 哔哩哔哩热门"
+        try:
+            return _section(
+                source, await self._uapi_hotboard("bilibili", count, BILIBILI_HOSTS)
+            )
+        except SOURCE_ERRORS as error:
+            _error(source, error)
+
+        source = "哔哩哔哩热搜"
+        try:
+            data = _object(
+                await self._json(BILIBILI_HOTWORDS, referer="https://www.bilibili.com/")
+            )
+            if data.get("code") != 0:
+                raise SourceResponseError("unexpected Bilibili response")
+            items: list[Headline] = []
+            for entry in map(_object, _array(data.get("list"))):
+                title = _text(entry.get("show_name")) or _text(entry.get("keyword"))
+                if not title:
+                    continue
+                link = (
+                    f"https://search.bilibili.com/all?keyword={quote(title, safe='')}"
+                )
+                items.append(_headline(title, url=link))
+                if len(items) >= count:
+                    break
+            return _section(source, items)
+        except SOURCE_ERRORS as error:
+            return _error(source, error)
+
+    async def _news(self, day: date, count: int) -> Section:
+        source = "60s API"
+        try:
+            response = _object(await self._json(WORLD_NEWS))
+            if response.get("code") != 200:
+                raise SourceResponseError("unexpected 60s API response")
+            data = _object(response.get("data"))
+            issue_date = _text(data.get("date"), 10)
+            if not issue_date:
+                raise SourceResponseError("missing news date")
+            if date.fromisoformat(issue_date) != day:
+                return _section(source, [])
+            url = _public_link(data.get("link"), NEWS_HOSTS)
+            items: list[Headline] = []
+            for entry in _array(data.get("news")):
+                title = NUMBERED_PREFIX.sub("", _text(entry), count=1)
+                if title:
+                    items.append(_headline(title, url=url))
+                if len(items) >= count:
+                    break
+            return _section(source, items)
+        except SOURCE_ERRORS as error:
+            return _error(source, error)
+
+    async def _tech(self, count: int) -> Section:
+        source = "IT之家 RSS"
+        try:
+            raw = await self._read(ITHOME_RSS)
+            # Work with plain UTF-8 to reject DTDs before the XML parser expands them.
+            xml = raw.decode("utf-8-sig")
+            if "<!DOCTYPE" in xml.upper():
+                raise SourceResponseError("unexpected XML document type")
+            root = ElementTree.fromstring(xml)
+            channel = root.find("channel")
+            if root.tag != "rss" or channel is None:
+                raise SourceResponseError("invalid RSS document")
+            items: list[Headline] = []
+            for entry in channel.iterfind("item"):
+                title = _text(entry.findtext("title"))
+                if not title:
+                    continue
+                items.append(
+                    _headline(
+                        title, url=_public_link(entry.findtext("link"), ITHOME_HOSTS)
+                    )
+                )
+                if len(items) >= count:
+                    break
+            return _section(source, items)
+        except SOURCE_ERRORS as error:
+            _error(source, error)
+
+        source = "UAPI · IT之家热榜"
+        try:
+            return _section(
+                source, await self._uapi_hotboard("ithome", count, ITHOME_HOSTS)
+            )
+        except SOURCE_ERRORS as error:
+            return _error(source, error)
+
+    async def _quote(self) -> Section:
+        source = "UAPI 一言"
+        try:
+            data = _object(await self._json(f"{UAPI}/saying"))
+            title = _text(data.get("text"))
+            if not title:
+                raise SourceResponseError("missing quote")
+            return _section(source, [_headline(title)])
+        except SOURCE_ERRORS as error:
+            _error(source, error)
+
+        source = "Hitokoto 一言"
+        try:
+            data = _object(await self._json(HITOKOTO))
+            title = _text(data.get("hitokoto"))
+            if not title:
+                raise SourceResponseError("missing quote")
+            origin = _text(data.get("from"), 52)
+            author = _text(data.get("from_who"), 40)
+            attribution = " · ".join(
+                dict.fromkeys(part for part in (origin, author) if part)
+            )
+            return _section(source, [_headline(title, meta=attribution)])
+        except SOURCE_ERRORS as error:
+            return _error(source, error)
+
+    async def _word(self, day: date) -> Section:
+        source = "UAPI 每日单词"
+        try:
+            data = _object(
+                await self._json(
+                    f"{UAPI}/daily/word",
+                    params={"date": day.isoformat(), "count": "1", "example": "false"},
+                )
+            )
+            items: list[Headline] = []
+            for entry in map(_object, _array(data.get("words"))):
+                title = _text(entry.get("word"), 48)
+                if not title:
+                    continue
+                phonetic = _text(entry.get("phonetic"), 40)
+                meaning = _text(entry.get("translation"), 100) or _text(
+                    entry.get("definition"), 100
+                )
+                item = _headline(title, meta=meaning)
+                if phonetic:
+                    item["phonetic"] = phonetic
+                items.append(item)
+                break
+            return _section(source, items)
+        except SOURCE_ERRORS as error:
+            return _error(source, error)

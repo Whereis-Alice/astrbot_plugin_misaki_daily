@@ -1,0 +1,71 @@
+<p align="center">
+  <img src="logo.png" width="112" alt="美咲日报 Logo">
+</p>
+
+# 美咲日报
+
+在 AstrBot 里查阅当天的农历、节日倒计时、新番、B 站热门和新闻。日报在机器人所在服务器上生成图片，也能按文字阅读、打开来源链接，或每天自动推送到指定群聊。
+
+<details>
+<summary>查看日报卡片示例（示意内容）</summary>
+
+<img src="assets/preview.jpg" width="520" alt="美咲日报图文卡片示例">
+
+</details>
+
+## 安装
+
+需要 **AstrBot 4.16 至 4.x**。在 AstrBot 管理面板的插件页选择通过链接安装，粘贴下方仓库地址。安装成功后，发送 `/美咲日报` 即可。各项内容开箱可用，无需申请 API Key，也无需配置浏览器渲染服务。
+
+```text
+https://github.com/Whereis-Alice/astrbot_plugin_misaki_daily
+```
+
+| 命令 | 用途 |
+| --- | --- |
+| `/美咲日报` | 查看当期图片。图片生成失败时，自动回复文字。 |
+| `/美咲日报文字` | 查看当期栏目和倒计时，适合文字阅读或低带宽场景。 |
+| `/美咲日报来源` | 获取当期可用的原文链接。60s 早报提供整期链接。 |
+| `/美咲日报会话` | AstrBot 管理员在接收推送的群里执行，复制返回的完整会话标识。 |
+
+命令示例使用 `/`。如果你的 AstrBot 配置了其他唤醒前缀，请用实际前缀。
+
+## 定时发到群聊
+
+1. 在每个目标群里发送 `/美咲日报会话`。
+2. 打开插件设置，把返回值逐项添加到「接收推送的群聊会话标识」。完整形式类似 `onebot-main:GroupMessage:123456789`，请复制机器人返回的实际值。
+3. 填写时区和每日推送时间，然后启用「群聊定时推送」并保存。默认时区为 `Asia/Shanghai`，时间为 `08:00`。
+
+每个会话标识每天只尝试推送一次，每个目标群填一项即可。到点时请保持 AstrBot 和对应平台在线。发送超时会留下日志，避免平台已经接收时再发一份。若适配器支持主动文字但限制主动图片，可将「推送格式」设为「文字」。主动发送能力取决于 AstrBot 平台适配器，例如 QQ 官方机器人对主动发送有额外限制。
+
+AI 问候默认关闭。开启后可指定聊天模型，或留空使用目标会话的模型。模型只接收日期和节日提示，调用失败时使用固定问候。
+
+## 栏目和数据源
+
+| 栏目 | 数据来源 |
+| --- | --- |
+| 农历、周末与节日 | 本地历法计算。倒计时是自然周末或节日日期，实际放假和调休请以当地官方通知为准。 |
+| 今日早报 | [60s API](https://60s.viki.moe/) 的当日简报。按日报配置时区核对日期，过期内容会跳过。 |
+| 科技资讯 | [IT之家 RSS](https://www.ithome.com/rss/)，失败时尝试 UAPI 的 IT之家热榜。 |
+| 今日新番 | [Bangumi 番组计划](https://bgm.tv/calendar)。按星期显示计划条目，可关闭封面或单独配置 Bangumi 备用代理。 |
+| B 站热门 | [UAPI](https://uapis.cn/) 的哔哩哔哩热门榜，失败时尝试 B 站热搜，卡片会标明实际来源。 |
+| 今日一言 | UAPI 一言，失败时尝试 [一言](https://hitokoto.cn/)。 |
+| 每日英语 | UAPI 每日单词，默认关闭，可在设置里开启。 |
+
+条数可设为 `0` 来关闭相应栏目。默认缓存 20 分钟，同一时期的命令和定时推送共用这一份数据。访客接口可能限流，源站失败时会在对应栏目提示，其他栏目照常生成。
+
+### 换用自己的封面
+
+在 AstrBot 的 `data` 目录中，将有权使用的图片保存为 `plugin_data/astrbot_plugin_misaki_daily/hero.webp`，然后重载插件。推荐使用约 **1080 × 396** 的 WebP，左侧留出深色空间给白色标题。删除自定义文件并重载即可恢复纸飞机封面。
+
+## 从真寻日报切换
+
+美咲日报是独立插件，安装后使用上表的新命令，也有单独的配置和数据目录。如果原插件已经启用定时推送，切换时请关闭原插件的推送，避免群里收到两份日报。原配置中的裸群号请用 `/美咲日报会话` 重新获取完整值。旧版 ALAPI Token 可以省去，插件使用表中的公开数据源。
+
+## 许可与致谢
+
+- 代码基于 AGPL-3.0 发布。美咲日报由真寻日报独立衍生，感谢原作者 Huahuatgc、维护者 luminacry，以及更早的 NoneBot 日报项目。[许可证](LICENSE) · [上游基线](https://github.com/luminacry/astrbot_plugin_zhenxunribao/tree/08169bec0a4032bf9af2e41fd544d1912a4f607d) · [nonebot-plugin-zxreport](https://github.com/HibiKier/nonebot-plugin-zxreport)
+- 内置 Noto Sans SC 及用于英语音标的 Noto Sans 子集均使用 SIL Open Font License 1.1。[Noto Sans SC 许可](assets/OFL.txt) · [Noto Sans 许可](assets/OFL-NotoSans.txt)
+- 美咲日报是非官方插件。鸢泽美咲出自 sprite 的游戏《苍之彼方的四重奏》，角色相关权利归原权利人。[官方角色页](https://sprite.net/characters/misaki) · [二次创作指南](https://sprite.net/pages/guidelines)
+
+遇到异常时，欢迎附上 AstrBot 版本、适配器名称、执行的命令和相关日志。发布前请从日志里移除令牌、群聊标识和代理账号。[提交 Issue](https://github.com/Whereis-Alice/astrbot_plugin_misaki_daily/issues/new)

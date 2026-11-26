@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <title>Misaki Daily logo</title>
+  <defs>
+    <linearGradient id="tile" x2="1" y2="1" gradientUnits="objectBoundingBox">
+      <stop offset="0" stop-color="#15254f"/>
+      <stop offset=".56" stop-color="#263967"/>
+      <stop offset="1" stop-color="#37647b"/>
+    </linearGradient>
+    <radialGradient id="sun">
+      <stop offset="0" stop-color="#ffa7a3"/>
+      <stop offset="1" stop-color="#f48392"/>
+    </radialGradient>
+    <linearGradient id="paper" x2=".86" y2="1" gradientUnits="objectBoundingBox">
+      <stop offset="0" stop-color="#f5fcfe"/>
+      <stop offset="1" stop-color="#a3dfe6"/>
+    </linearGradient>
+    <clipPath id="bounds"><rect x="18" y="18" width="476" height="476" rx="120"/></clipPath>
+  </defs>
+  <g clip-path="url(#bounds)">
+    <rect x="18" y="18" width="476" height="476" fill="url(#tile)"/>
+    <path d="M-24 366C76 319 165 316 229 339c90 33 178 21 313-52v247H-24z" fill="#172a57" opacity=".64"/>
+    <path d="M-25 430c108-51 167-60 251-32 98 33 179 17 305-54" fill="none" stroke="#89b1d1" stroke-opacity=".34" stroke-width="3"/>
+    <path d="M-26 459c96-42 168-56 254-27 92 30 179 12 303-51" fill="none" stroke="#9daee1" stroke-opacity=".19" stroke-width="2"/>
+    <circle cx="344" cy="161" r="108" fill="#ee9c9e" opacity=".11"/>
+    <circle cx="344" cy="161" r="87" fill="url(#sun)" opacity=".95"/>
+    <path d="M261 158h167m-164 18h162m-159 17h151" stroke="#e8a3ba" stroke-width="2.3" opacity=".75"/>
+    <path d="M109 154h50m-30-16h12m276 104h26" fill="none" stroke="#c2dbe5" stroke-opacity=".73" stroke-width="3" stroke-linecap="round"/>
+    <path d="M85 285c36-4 67-12 95-23M107 327c34-5 73-17 104-33M149 352c30-8 61-18 86-31" fill="none" stroke="#a4d7e0" stroke-opacity=".69" stroke-width="5" stroke-linecap="round"/>
+    <path d="M126 274 410 130 350 326c-2 8-10 11-17 8l-62-30-23 48c-6 13-19 10-22-4l-16-75-75 21c-16 4-23-12-9-20z" fill="#111b3a" opacity=".46" transform="translate(6 12)"/>
+    <path d="M126 266 407 125 344 322c-1 5-6 7-10 5l-66-32-27 54c-3 6-10 5-12-2l-16-78-77 21c-14 4-25-16-10-24z" fill="url(#paper)"/>
+    <path d="m407 125-194 144 16 78c2 7 9 8 12 2l27-54 139-170z" fill="#75b1c9"/>
+    <path d="m407 125-139 170-29 56 12-75z" fill="#4f82ad"/>
+    <path d="m407 125-156 151 83 51c4 2 9 0 10-5z" fill="url(#paper)"/>
+    <path d="m277 277 41-35 29 17-13 43z" fill="#ed7f8c" opacity=".91"/>
+    <path d="m318 226 45-39m-29 51 22-19m-14 30 8-7" fill="none" stroke="#427198" stroke-width="5" stroke-linecap="round"/>
+    <path d="M90 209v19m-9-10h18m110-102v13m-6.5-6.5h13" stroke="#f6dae2" stroke-width="3" stroke-linecap="round"/>
+    <circle cx="429" cy="299" r="4" fill="#f8bac2"/>
+  </g>
+  <rect x="20" y="20" width="472" height="472" rx="118" fill="none" stroke="#a7bfdd" stroke-opacity=".57" stroke-width="4"/>
+</svg>

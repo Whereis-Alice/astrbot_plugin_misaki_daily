@@ -1,0 +1,102 @@
+{
+  "timezone": {
+    "type": "string",
+    "description": "日报与推送时区",
+    "default": "Asia/Shanghai",
+    "hint": "填写 IANA 时区，例如 Asia/Shanghai 或 Asia/Tokyo。"
+  },
+  "max_holiday_count": {
+    "type": "int",
+    "description": "周末与节日条数",
+    "default": 3,
+    "hint": "范围 0–8，0 隐藏栏目。按公历、农历及节气计算节日日期。"
+  },
+  "max_news_count": {
+    "type": "int",
+    "description": "今日早报条数",
+    "default": 5,
+    "hint": "范围 0–8，0 隐藏栏目。"
+  },
+  "max_tech_count": {
+    "type": "int",
+    "description": "科技资讯条数",
+    "default": 4,
+    "hint": "范围 0–8，0 隐藏栏目。"
+  },
+  "max_anime_count": {
+    "type": "int",
+    "description": "今日新番条数",
+    "default": 4,
+    "hint": "范围 0–8，0 隐藏栏目。"
+  },
+  "show_anime_covers": {
+    "type": "bool",
+    "description": "展示新番封面",
+    "default": true,
+    "hint": "服务器连接 Bangumi 图片较慢时可关闭。"
+  },
+  "bangumi_proxy": {
+    "type": "string",
+    "description": "Bangumi 备用 HTTP(S) 代理",
+    "default": "",
+    "hint": "主路径失败时用于 Bangumi 日历和封面。填写 http://主机:端口 或 https://主机:端口。"
+  },
+  "max_hotword_count": {
+    "type": "int",
+    "description": "B站热门条数",
+    "default": 4,
+    "hint": "范围 0–8，0 隐藏栏目。"
+  },
+  "show_quote": {
+    "type": "bool",
+    "description": "展示今日一言",
+    "default": true
+  },
+  "show_word": {
+    "type": "bool",
+    "description": "展示每日英语",
+    "default": false
+  },
+  "cache_minutes": {
+    "type": "int",
+    "description": "同一期日报缓存时长（分钟）",
+    "default": 20,
+    "hint": "范围 5–120，有栏目请求失败时缓存 5 分钟。"
+  },
+  "enable_scheduled_push": {
+    "type": "bool",
+    "description": "启用群聊定时推送",
+    "default": false
+  },
+  "scheduled_push_time": {
+    "type": "string",
+    "description": "每日推送时间",
+    "default": "08:00",
+    "hint": "采用上方时区，填写 24 小时制 HH:MM。"
+  },
+  "scheduled_push_groups": {
+    "type": "list",
+    "description": "接收推送的群聊会话标识",
+    "default": [],
+    "hint": "管理员在目标群发送 /美咲日报会话，逐项粘贴完整返回值。"
+  },
+  "push_format": {
+    "type": "string",
+    "description": "推送格式",
+    "options": ["图片", "文字"],
+    "default": "图片"
+  },
+  "enable_ai_greeting": {
+    "type": "bool",
+    "description": "在定时推送中加入 AI 问候",
+    "default": false,
+    "hint": "每个目标分别调用聊天模型。发送给模型的是日期和节日提示。"
+  },
+  "greeting_provider_id": {
+    "type": "string",
+    "description": "AI 问候使用的聊天模型",
+    "default": "",
+    "_special": "select_provider",
+    "hint": "留空时使用目标会话当前选择的聊天模型。"
+  }
+}
