@@ -11,29 +11,35 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 ASSETS = Path(__file__).resolve().parent / "assets"
 LOGGER = logging.getLogger(__name__)
-WIDTH = 760
-GUTTER = 34
-INSET = 22
-INK = "#182D43"
-MUTED = "#4D6474"
-PAPER = "#F1F5F7"
-LINE = "#E2EAEF"
-WHITE = "#FFFFFF"
+WIDTH = 960
+MARGIN = 27
+CONTENT_X = 54
+CONTENT_W = WIDTH - 2 * CONTENT_X
+GAP = 18
+INK = "#302735"
+MUTED = "#716071"
+ACCENT = "#9A4D77"
+EDGE = "#C78EAD"
+PAPER = "#F8F2F6"
+PANEL = "#FBF6F9"
+LABEL = "#FFFBFD"
 SECTION_TITLES = {
-    "news": "今日早报",
-    "tech": "科技资讯",
+    "hot": "B站热点",
     "anime": "今日新番",
-    "hot": "B站热门",
+    "news": "60s读懂世界",
+    "tech": "IT资讯",
     "quote": "今日一言",
     "word": "每日英语",
 }
-SECTION_MARKS = {
-    "news": ("#DDECFA", "#1D5588", "报"),
-    "tech": ("#DCF2EE", "#175E56", "科"),
-    "anime": ("#EDE9FA", "#51438B", "番"),
-    "hot": ("#FBE8EE", "#923C5D", "热"),
-    "quote": ("#FFF0E2", "#81502F", "言"),
-    "word": ("#E9EFF8", "#3A527A", "EN"),
+LABELS = {"calendar": "摸鱼日历", **SECTION_TITLES}
+ICONS = {
+    "calendar": "历",
+    "hot": "TV",
+    "anime": "番",
+    "news": "闪",
+    "tech": "IT",
+    "quote": "言",
+    "word": "EN",
 }
 STATUS_TEXT = {"empty": "今天暂无条目", "error": "数据源暂不可用"}
 _NO_LINE_START = '，。；、：！？》〉」』】〕）］｝”’…·,.?!)":;'
@@ -46,27 +52,22 @@ def _font(size: int) -> ImageFont.FreeTypeFont:
 
 @lru_cache(maxsize=1)
 def _phonetic_font() -> ImageFont.FreeTypeFont:
-    return ImageFont.truetype(str(ASSETS / "NotoSans-Latin.ttf"), 20)
+    return ImageFont.truetype(str(ASSETS / "NotoSans-Latin.ttf"), 23)
 
 
-def _draw_text(
+def _text(
     draw: ImageDraw.ImageDraw,
-    x: int,
-    y: int,
+    xy: tuple[int, int],
     value: str,
     size: int,
     color: str = INK,
+    *,
+    anchor: str = "lt",
     weight: int = 0,
 ) -> None:
     draw.text(
-        (x, y), value, font=_font(size), fill=color, anchor="lt", stroke_width=weight
+        xy, value, font=_font(size), fill=color, anchor=anchor, stroke_width=weight
     )
-
-
-def _draw_right(
-    draw: ImageDraw.ImageDraw, x: int, y: int, value: str, size: int, color: str = MUTED
-) -> None:
-    draw.text((x, y), value, font=_font(size), fill=color, anchor="rt")
 
 
 def _wrap(value: str, size: int, width: int, max_lines: int) -> list[str]:
@@ -102,29 +103,91 @@ def _wrap(value: str, size: int, width: int, max_lines: int) -> list[str]:
     return [*lines[: max_lines - 1], last + "…"]
 
 
-def _tile(height: int) -> tuple[Image.Image, ImageDraw.ImageDraw]:
-    tile = Image.new("RGB", (WIDTH - 2 * GUTTER, height), PAPER)
-    draw = ImageDraw.Draw(tile)
+def _frame(
+    key: str, width: int, height: int, source: str = ""
+) -> tuple[Image.Image, ImageDraw.ImageDraw]:
+    image = Image.new("RGB", (width, height), PAPER)
+    draw = ImageDraw.Draw(image)
     draw.rounded_rectangle(
-        (0, 0, tile.width - 1, height - 1), radius=22, fill=WHITE, outline=LINE, width=1
+        (1, 28, width - 2, height - 2), radius=18, fill=PANEL, outline=EDGE, width=4
     )
-    return tile, draw
-
-
-def _tile_heading(
-    tile: Image.Image, draw: ImageDraw.ImageDraw, key: str, source: str
-) -> None:
-    fill, accent, mark = SECTION_MARKS[key]
-    draw.rounded_rectangle((INSET, 16, INSET + 42, 58), radius=12, fill=fill)
-    draw.text(
-        (INSET + 21, 37),
-        mark,
-        font=_font(15 if mark == "EN" else 21),
-        fill=accent,
+    label = LABELS[key]
+    label_right = 83 + round(_font(27).getlength(label)) + 16
+    draw.rounded_rectangle(
+        (19, 1, label_right, 55), radius=15, fill=LABEL, outline=EDGE, width=3
+    )
+    icon = ICONS[key]
+    icon_bg = "#E3EFF2" if key == "hot" else "#F1E1ED"
+    icon_ink = "#3B7385" if key == "hot" else ACCENT
+    draw.rounded_rectangle((31, 12, 62, 43), radius=7, fill=icon_bg)
+    _text(
+        draw,
+        (47, 28),
+        icon,
+        14 if icon.isascii() else 19,
+        icon_ink,
         anchor="mm",
+        weight=1,
     )
-    _draw_text(draw, INSET + 58, 23, SECTION_TITLES[key], 29, weight=1)
-    _draw_right(draw, tile.width - INSET, 27, source, 18)
+    _text(draw, (72, 16), label, 27, ACCENT, weight=1)
+    if source and label_right + _font(17).getlength(source) + 45 < width:
+        _text(draw, (width - 22, 43), source, 17, MUTED, anchor="rt")
+    return image, draw
+
+
+def _countdown(item: dict) -> str:
+    return "今天" if item["days_left"] == 0 else f"{item['days_left']} 天后"
+
+
+def _calendar(festivals: list[dict], width: int, height: int) -> Image.Image:
+    image, draw = _frame("calendar", width, height)
+    for index, item in enumerate(festivals):
+        y = 83 + index * 49
+        _text(draw, (24, y), item["name"], 25, ACCENT, weight=1)
+        _text(
+            draw, (width - 24, y + 2), _countdown(item), 23, INK, anchor="rt", weight=1
+        )
+        if index < len(festivals) - 1:
+            draw.line((24, y + 34, width - 24, y + 34), fill="#EBDCE6")
+    return image
+
+
+def _headline_rows(
+    section: dict, width: int, size: int, marker: int, *, limit: int
+) -> list[list[str]]:
+    return [
+        _wrap(item["title"], size, width - 48 - marker, limit)
+        for item in section["items"]
+    ]
+
+
+def _list_panel(
+    key: str, section: dict, width: int, *, min_height: int = 0
+) -> Image.Image:
+    hot = key == "hot"
+    marker = 42 if hot else 30
+    size, line_height, spacing = (24, 32, 13) if hot else (26, 38, 15)
+    rows = _headline_rows(section, width, size, marker, limit=3 if hot else 4)
+    height = 86 + sum(len(row) * line_height + spacing for row in rows) + 16
+    if not rows:
+        height = 140
+    image, draw = _frame(key, width, max(height, min_height), section["source"])
+    if not rows:
+        _text(draw, (24, 85), STATUS_TEXT.get(section["status"], "暂无条目"), 24, MUTED)
+        return image
+
+    y = 80
+    for row in rows:
+        if hot:
+            draw.rounded_rectangle((24, y + 1, 54, y + 31), radius=7, fill="#BC7195")
+            _text(draw, (39, y + 16), "热", 19, "#FFFFFF", anchor="mm")
+        else:
+            draw.ellipse((27, y + 11, 34, y + 18), fill=ACCENT)
+        for line in row:
+            _text(draw, (24 + marker, y), line, size)
+            y += line_height
+        y += spacing
+    return image
 
 
 def _cover(uri: str, size: tuple[int, int]) -> Image.Image | None:
@@ -132,186 +195,240 @@ def _cover(uri: str, size: tuple[int, int]) -> Image.Image | None:
         return None
     try:
         with Image.open(
-            BytesIO(base64.b64decode(uri.split(",", 1)[1], validate=True))
+            BytesIO(base64.b64decode(uri.split(",", 1)[1], validate=True)),
+            formats=("JPEG",),
         ) as image:
             return ImageOps.fit(image.convert("RGB"), size, Image.Resampling.LANCZOS)
     except (OSError, ValueError):
         return None
 
 
-def _anime_grid(section: dict) -> Image.Image:
+def _anime_panel(section: dict, show_covers: bool) -> Image.Image:
     items = section["items"]
-    tile, draw = _tile(82 + ((len(items) + 1) // 2) * 108)
-    col_width = (tile.width - 2 * INSET - 12) // 2
-    _tile_heading(tile, draw, "anime", section["source"])
+    if not show_covers or not items:
+        return _list_panel("anime", section, CONTENT_W)
+
+    columns = 5
+    gap = 16
+    poster_w = (CONTENT_W - 48 - gap * (columns - 1)) // columns
+    poster_h = round(poster_w * 1.5)
+    row_height = poster_h + 100
+    height = 79 + ((len(items) + columns - 1) // columns) * row_height
+    image, draw = _frame("anime", CONTENT_W, height, section["source"])
+    mask = Image.new("L", (poster_w, poster_h))
+    ImageDraw.Draw(mask).rounded_rectangle(
+        (0, 0, poster_w - 1, poster_h - 1), radius=11, fill=255
+    )
     for index, item in enumerate(items):
-        x = INSET + (index % 2) * (col_width + 12)
-        y = 72 + (index // 2) * 108
-        draw.rounded_rectangle((x, y, x + col_width, y + 96), radius=12, fill="#F3F1FC")
-        cover = _cover(item.get("cover", ""), (60, 84))
-        if cover:
-            tile.paste(cover, (x + 6, y + 6))
-        else:
-            _draw_text(draw, x + 14, y + 37, str(index + 1).zfill(2), 23, "#51438B")
-        for row, line in enumerate(_wrap(item["title"], 23, col_width - 88, 3)):
-            _draw_text(draw, x + 76, y + 12 + row * 25, line, 23)
-    return tile
-
-
-def _panel(key: str, section: dict) -> Image.Image:
-    items = section["items"]
-    if key == "anime" and items and any(item.get("cover") for item in items):
-        return _anime_grid(section)
-
-    is_feature = key in {"quote", "word"}
-    lines_by_item = []
-    for item in items:
-        lines = _wrap(
-            item["title"],
-            27,
-            WIDTH - 2 * GUTTER - 2 * INSET - 45,
-            3 if is_feature else 2,
-        )
-        details = (
-            _wrap(item.get("meta", ""), 20, WIDTH - 2 * GUTTER - 2 * INSET - 45, 2)
-            if is_feature
-            else []
-        )
-        lines_by_item.append((lines, details, item.get("phonetic", "")))
-
-    tile, draw = _tile(
-        88
-        + sum(
-            len(lines) * 34 + (len(details) + bool(phonetic)) * 25 + 16
-            for lines, details, phonetic in lines_by_item
-        )
-        if lines_by_item
-        else 115
-    )
-    _tile_heading(tile, draw, key, section["source"])
-    if not lines_by_item:
-        _draw_text(
-            draw, INSET, 76, STATUS_TEXT.get(section["status"], "暂无条目"), 23, MUTED
-        )
-        return tile
-
-    y = 74
-    for index, (lines, details, phonetic) in enumerate(lines_by_item):
-        if is_feature:
+        x = 24 + (index % columns) * (poster_w + gap)
+        y = 78 + (index // columns) * row_height
+        poster = _cover(item.get("cover", ""), (poster_w, poster_h))
+        if poster is None:
             draw.rounded_rectangle(
-                (INSET + 2, y + 4, INSET + 6, y + 29),
-                radius=2,
-                fill=SECTION_MARKS[key][1],
+                (x, y, x + poster_w - 1, y + poster_h - 1), radius=11, fill="#F1E4EE"
+            )
+            _text(
+                draw,
+                (x + poster_w // 2, y + poster_h // 2),
+                "暂无封面",
+                18,
+                MUTED,
+                anchor="mm",
             )
         else:
-            _draw_text(
+            image.paste(poster, (x, y), mask)
+        for line_index, line in enumerate(_wrap(item["title"], 20, poster_w, 3)):
+            _text(
                 draw,
-                INSET + 2,
-                y + 4,
-                str(index + 1).zfill(2),
-                19,
-                SECTION_MARKS[key][1],
+                (x + poster_w // 2, y + poster_h + 12 + line_index * 24),
+                line,
+                20,
+                anchor="mt",
             )
-        for line in lines:
-            _draw_text(draw, INSET + 43, y, line, 27)
-            y += 34
-        if phonetic:
-            draw.text(
-                (INSET + 43, y + 1),
-                phonetic,
-                font=_phonetic_font(),
-                fill=MUTED,
-                anchor="lt",
+    return image
+
+
+def _feature(key: str, section: dict) -> Image.Image:
+    if not section["items"]:
+        return _list_panel(key, section, CONTENT_W)
+    item = section["items"][0]
+    quote = key == "quote"
+    title = f"“{item['title']}”" if quote else item["title"]
+    lines = _wrap(title, 29, CONTENT_W - 75, 4)
+    meta = _wrap(item.get("meta", ""), 22, CONTENT_W - 84, 2)
+    phonetic = item.get("phonetic", "")
+    height = 106 + len(lines) * 38 + (len(meta) + bool(phonetic)) * 31
+    image, draw = _frame(key, CONTENT_W, height, section["source"])
+    y = 82
+    for line in lines:
+        xy = (CONTENT_W // 2, y) if quote else (26, y)
+        _text(draw, xy, line, 29, ACCENT, anchor="mt" if quote else "lt", weight=1)
+        y += 38
+    if phonetic:
+        draw.text((26, y), phonetic, font=_phonetic_font(), fill=MUTED, anchor="lt")
+        y += 31
+    for index, line in enumerate(meta):
+        xy = (CONTENT_W - 30, y) if quote else (26, y)
+        prefix = "—— " if quote and index == 0 else ""
+        _text(draw, xy, prefix + line, 22, MUTED, anchor="rt" if quote else "lt")
+        y += 31
+    return image
+
+
+def _portrait(path: Path | None) -> Image.Image | None:
+    if path is None or not path.is_file():
+        return None
+    try:
+        if path.stat().st_size > 8 * 1024 * 1024:
+            raise ValueError("file too large")
+        with Image.open(path, formats=("WEBP", "PNG", "JPEG")) as image:
+            if image.width * image.height > 12_000_000:
+                raise ValueError("image too large")
+            portrait = image.convert("RGBA")
+            portrait = portrait.crop(
+                portrait.getbbox(alpha_only=True) or (0, 0, *portrait.size)
             )
-            y += 25
-        for line in details:
-            _draw_text(draw, INSET + 43, y + 1, line, 20, MUTED)
-            y += 25
-        if index < len(lines_by_item) - 1:
-            draw.line((INSET + 43, y + 5, tile.width - INSET, y + 5), fill=LINE)
-        y += 16
-    return tile
+            portrait.thumbnail((210, 215), Image.Resampling.LANCZOS)
+            return portrait
+    except (OSError, ValueError, Image.DecompressionBombError):
+        LOGGER.warning("[美咲日报] 自定义立绘读取失败")
+        return None
 
 
-def _countdown(item: dict) -> str:
-    return "今天" if item["days_left"] == 0 else f"{item['days_left']} 天后"
-
-
-def _calendar_panel(festivals: list[dict]) -> Image.Image:
-    tile, draw = _tile(72 + ((len(festivals) + 2) // 3) * 82)
-    _draw_text(draw, INSET, 20, "周末与节日", 29, weight=1)
-    col_width = (tile.width - 2 * INSET - 16) // 3
-    for index, item in enumerate(festivals):
-        x = INSET + (index % 3) * (col_width + 8)
-        y = 58 + (index // 3) * 82
-        draw.rounded_rectangle(
-            (x, y, x + col_width - 1, y + 71), radius=12, fill="#F1F6FB"
-        )
-        _draw_text(draw, x + 12, y + 10, item["name"], 23)
-        _draw_text(
-            draw,
-            x + 12,
-            y + 40,
-            f"{item['date'][5:].replace('-', '/')}  ·  {_countdown(item)}",
-            19,
-            MUTED,
-        )
-    return tile
-
-
-def _hero(size: tuple[int, int], custom_path: Path | None) -> Image.Image:
-    if custom_path is not None and custom_path.is_file():
-        try:
-            if custom_path.stat().st_size > 8 * 1024 * 1024:
-                raise ValueError("file too large")
-            with Image.open(custom_path, formats=("WEBP", "PNG", "JPEG")) as image:
-                if image.width * image.height > 12_000_000:
-                    raise ValueError("image too large")
-                return ImageOps.fit(
-                    image.convert("RGB"), size, Image.Resampling.LANCZOS
-                )
-        except (OSError, ValueError, Image.DecompressionBombError):
-            LOGGER.warning("[美咲日报] 自定义封面读取失败，使用内置封面")
-    with Image.open(ASSETS / "sky-hero.webp") as image:
-        return ImageOps.fit(image.convert("RGB"), size, Image.Resampling.LANCZOS)
-
-
-def render_card(report: dict, custom_hero: Path | None = None) -> bytes:
-    """Render the edition locally and return a JPEG suitable for messaging adapters."""
-    calendar = report["calendar"]
-    sections = report["sections"]
-    tiles = [_calendar_panel(calendar["festivals"])] if calendar["festivals"] else []
-    for key in SECTION_TITLES:
-        if key in sections:
-            tiles.append(_panel(key, sections[key]))
-
-    hero_height = 278
-    start = hero_height + 94
-    gap = 14
-    canvas = Image.new(
-        "RGB", (WIDTH, start + sum(tile.height + gap for tile in tiles) + 20), PAPER
-    )
-    canvas.paste(_hero((WIDTH, hero_height), custom_hero), (0, 0))
+def _masthead(canvas: Image.Image, report: dict, custom_portrait: Path | None) -> None:
     draw = ImageDraw.Draw(canvas)
-    draw.rounded_rectangle((GUTTER, 64, GUTTER + 62, 70), radius=3, fill="#F7B4B3")
-    _draw_text(draw, GUTTER, 90, "美咲日报", 70, "#FFFFFF", 1)
-    _draw_text(draw, GUTTER + 3, 180, "MISAKI DAILY", 25, "#D8EBFE")
-    draw.rectangle((0, hero_height, WIDTH, hero_height + 74), fill=WHITE)
-    _draw_text(
-        draw, GUTTER, hero_height + 19, report["day"].strftime("%Y.%m.%d"), 33, weight=1
+    for y in range(59, 307, 9):
+        for x in range(57 + (y % 2) * 4, WIDTH - 59, 9):
+            draw.point((x, y), fill="#E8D9E4")
+
+    portrait = _portrait(custom_portrait) or _portrait(ASSETS / "portrait.webp")
+    if portrait is not None:
+        canvas.paste(
+            portrait,
+            (61 + (218 - portrait.width) // 2, 272 - portrait.height),
+            portrait,
+        )
+    else:
+        draw.ellipse((94, 91, 239, 236), outline="#DEC3D6", width=2)
+        draw.line(
+            [
+                (98, 201),
+                (225, 122),
+                (192, 223),
+                (164, 194),
+                (139, 216),
+                (149, 183),
+                (98, 201),
+            ],
+            fill="#BD85A8",
+            width=4,
+            joint="curve",
+        )
+        draw.line(
+            [(149, 183), (225, 122), (164, 194)], fill="#BD85A8", width=3, joint="curve"
+        )
+
+    title_xy = (468, 92)
+    font = _font(149)
+    draw.text(
+        (title_xy[0] + 7, title_xy[1] + 8),
+        "日报",
+        fill="#B7789D",
+        font=font,
+        anchor="mt",
+        stroke_width=9,
     )
-    _draw_right(
+    draw.text(
+        title_xy,
+        "日报",
+        fill="#D18EB0",
+        font=font,
+        anchor="mt",
+        stroke_width=9,
+        stroke_fill=LABEL,
+    )
+    draw.text(title_xy, "日报", fill="#D18EB0", font=font, anchor="mt", stroke_width=4)
+
+    date_x = WIDTH - CONTENT_X - 205
+    right = WIDTH - CONTENT_X
+    center = (date_x + right) // 2
+    top, bottom = 75, 302
+    draw.rounded_rectangle((date_x, top, right, bottom), radius=22, fill=LABEL)
+    draw.rounded_rectangle((date_x, top, right, top + 136), radius=22, fill="#EFE1EA")
+    draw.rectangle((date_x + 2, top + 105, right - 2, top + 130), fill="#EFE1EA")
+    draw.rectangle((date_x + 2, top + 126, right - 2, top + 177), fill="#B97098")
+    draw.rounded_rectangle(
+        (date_x, top, right, bottom), radius=22, outline=EDGE, width=3
+    )
+    calendar = report["calendar"]
+    _text(
         draw,
-        WIDTH - GUTTER,
-        hero_height + 24,
-        f"{calendar['weekday']}  ·  农历{calendar['lunar']}",
-        23,
+        (center, top + 66),
+        calendar["weekday"][-1],
+        79,
+        "#B86E98",
+        anchor="mm",
+        weight=2,
+    )
+    _text(
+        draw,
+        (center, top + 152),
+        report["day"].strftime("%Y年%m月%d日"),
+        22,
+        "#FFFFFF",
+        anchor="mm",
+        weight=1,
+    )
+    _text(
+        draw, (center, top + 201), calendar["lunar"], 23, ACCENT, anchor="mm", weight=1
     )
 
+
+def render_card(report: dict, custom_portrait: Path | None = None) -> bytes:
+    """Render the portrait, calendar masthead and framed edition as a local JPEG."""
+    festivals = report["calendar"]["festivals"]
+    sections = report["sections"]
+    rows = []
+    hot = sections.get("hot")
+    if festivals or hot is not None:
+        calendar_w = round((CONTENT_W - GAP) * 0.40) if hot is not None else CONTENT_W
+        hot_w = (CONTENT_W - GAP - calendar_w) if festivals else CONTENT_W
+        calendar_h = 91 + len(festivals) * 49 + 20 if festivals else 0
+        top_row = []
+        if hot is not None:
+            panel = _list_panel("hot", hot, hot_w, min_height=calendar_h)
+            calendar_h = panel.height
+        if festivals:
+            top_row.append(_calendar(festivals, calendar_w, calendar_h))
+        if hot is not None:
+            top_row.append(panel)
+        rows.append(top_row)
+    if "anime" in sections:
+        rows.append(
+            [_anime_panel(sections["anime"], report.get("show_anime_covers", True))]
+        )
+    for key in ("news", "tech"):
+        if key in sections:
+            rows.append([_list_panel(key, sections[key], CONTENT_W)])
+    for key in ("quote", "word"):
+        if key in sections:
+            rows.append([_feature(key, sections[key])])
+
+    start = 319
+    height = start + sum(row[0].height + GAP for row in rows) + MARGIN + 8
+    canvas = Image.new("RGB", (WIDTH, height), "#E1BED2")
+    draw = ImageDraw.Draw(canvas)
+    draw.rounded_rectangle(
+        (MARGIN, MARGIN, WIDTH - MARGIN - 1, height - MARGIN - 1), radius=31, fill=PAPER
+    )
+    _masthead(canvas, report, custom_portrait)
     y = start
-    for tile in tiles:
-        canvas.paste(tile, (GUTTER, y))
-        y += tile.height + gap
+    for row in rows:
+        x = CONTENT_X
+        for panel in row:
+            canvas.paste(panel, (x, y))
+            x += panel.width + GAP
+        y += row[0].height + GAP
 
     with BytesIO() as buffer:
         canvas.save(
@@ -329,7 +446,7 @@ def render_text(report: dict, *, links_only: bool = False) -> str:
     day = report["day"].isoformat()
     calendar = report["calendar"]
     sections = report["sections"]
-    parts = [f"美咲日报 · {day}"]
+    parts = [f"日报 · {day}"]
     if not links_only:
         parts[0] += f"\n{calendar['weekday']} · 农历{calendar['lunar']}"
         if calendar["festivals"]:

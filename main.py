@@ -41,7 +41,7 @@ class MisakiDailyPlugin(Star):
         self._image_lock = asyncio.Lock()
         self._report_cache: tuple[date, float, dict] | None = None
         self._image_cache: tuple[dict, str] | None = None
-        self._hero_path = None
+        self._portrait_path = None
 
     async def initialize(self) -> None:
         if self._session is not None:
@@ -57,11 +57,11 @@ class MisakiDailyPlugin(Star):
             show_covers=bool(self.config.get("show_anime_covers", True)),
         )
         try:
-            self._hero_path = (
-                StarTools.get_data_dir("astrbot_plugin_misaki_daily") / "hero.webp"
+            self._portrait_path = (
+                StarTools.get_data_dir("astrbot_plugin_misaki_daily") / "portrait.webp"
             )
         except (OSError, RuntimeError):
-            logger.warning("[美咲日报] 无法读取自定义封面目录，使用内置封面")
+            logger.warning("[美咲日报] 无法读取自定义立绘目录")
 
         if self.config.get("enable_scheduled_push", False):
             value = str(self.config.get("scheduled_push_time", "08:00")).strip()
@@ -151,6 +151,7 @@ class MisakiDailyPlugin(Star):
             )
             report = {
                 "day": day,
+                "show_anime_covers": bool(self.config.get("show_anime_covers", True)),
                 "calendar": build_calendar(
                     day, self._number("max_holiday_count", 3, 8)
                 ),
@@ -167,7 +168,9 @@ class MisakiDailyPlugin(Star):
             if self._image_cache and self._image_cache[0] is report:
                 return self._image_cache[1]
             try:
-                content = await asyncio.to_thread(render_card, report, self._hero_path)
+                content = await asyncio.to_thread(
+                    render_card, report, self._portrait_path
+                )
                 image = base64.b64encode(content).decode("ascii")
             except (OSError, ValueError, RuntimeError):
                 logger.exception("[美咲日报] 图片生成失败，改用文字日报")

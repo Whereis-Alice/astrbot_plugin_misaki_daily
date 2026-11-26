@@ -43,14 +43,14 @@ def sample_report():
 
 
 class CardTests(unittest.TestCase):
-    def test_render_falls_back_from_an_unreadable_custom_cover(self):
+    def test_render_falls_back_from_an_unreadable_custom_portrait(self):
         report = sample_report()
         unreadable = Path(__file__)
         result = render_card(report, unreadable)
         self.assertEqual(result, render_card(report))
         with Image.open(BytesIO(result)) as image:
             self.assertEqual(image.format, "JPEG")
-            self.assertEqual(image.width, 760)
+            self.assertEqual(image.width, 960)
             self.assertGreater(image.height, image.width)
             image.verify()
 
