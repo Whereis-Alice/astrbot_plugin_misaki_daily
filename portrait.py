@@ -35,9 +35,7 @@ def prepare_portrait(
     bounds = portrait.getbbox(alpha_only=True)
     if bounds is None:
         raise ValueError("transparent portrait")
-    portrait = portrait.crop(bounds)
-    portrait.thumbnail((210, 215), Image.Resampling.LANCZOS)
-    return portrait
+    return portrait.crop(bounds)
 
 
 def _local_portrait(path: Path) -> Image.Image | None:

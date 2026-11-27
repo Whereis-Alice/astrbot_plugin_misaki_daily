@@ -1,7 +1,7 @@
 name: astrbot_plugin_misaki_daily
 display_name: 美咲日报
 desc: 日历、新番、B站热门、早报和科技资讯。支持本地图片、文字版和群聊定时推送。
-version: v1.0.4
+version: v1.0.5
 author: Whereis-Alice
 repo: https://github.com/Whereis-Alice/astrbot_plugin_misaki_daily
 astrbot_version: ">=4.16,<5"

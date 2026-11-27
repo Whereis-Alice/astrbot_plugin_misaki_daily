@@ -35,12 +35,13 @@ WORLD_NEWS = "https://60s.viki.moe/v2/60s"
 ITHOME_RSS = "https://www.ithome.com/rss/"
 HITOKOTO = "https://v1.hitokoto.cn/"
 
-USER_AGENT = "Whereis-Alice/MisakiDaily/1.0.3 (+https://github.com/Whereis-Alice/astrbot_plugin_misaki_daily)"
+USER_AGENT = "Whereis-Alice/MisakiDaily/1.0.5 (+https://github.com/Whereis-Alice/astrbot_plugin_misaki_daily)"
 SOURCE_TIMEOUT = aiohttp.ClientTimeout(total=7, connect=3, sock_read=4)
-COVER_TIMEOUT = aiohttp.ClientTimeout(total=4, connect=2, sock_read=3)
+COVER_TIMEOUT = aiohttp.ClientTimeout(total=3, connect=2, sock_read=2)
 COVER_BATCH_TIMEOUT = 5
 SOURCE_LIMIT = 1024 * 1024
 COVER_LIMIT = 256 * 1024
+COVER_OUTPUT_LIMIT = 160 * 1024
 COVER_HOSTS = frozenset({"lain.bgm.tv", "lain.bangumi.tv", "lain.chii.in"})
 BILIBILI_HOSTS = frozenset({"www.bilibili.com", "search.bilibili.com"})
 ITHOME_HOSTS = frozenset({"www.ithome.com", "m.ithome.com", "ithome.com"})
@@ -137,6 +138,26 @@ def _cover_link(value: object) -> str:
     return link
 
 
+def _cover_candidates(images: dict) -> tuple[str, ...]:
+    candidates = []
+    # The legacy calendar exposes cropped thumbnails. Resize its original on the CDN
+    # using the same 400-pixel endpoint as the current subject API.
+    original = _cover_link(images.get("large"))
+    if original:
+        parts = urlsplit(original)
+        if parts.path.startswith("/pic/cover/l/"):
+            candidates.append(parts._replace(path=f"/r/400{parts.path}").geturl())
+        else:
+            candidates.append(original)
+    for key in ("common", "medium", "small"):
+        link = _cover_link(images.get(key))
+        if link:
+            candidates.append(link)
+    if original:
+        candidates.append(original)
+    return tuple(dict.fromkeys(candidates))
+
+
 def _air_date(value: object) -> date | None:
     if not isinstance(value, str) or len(value) != 10:
         return None
@@ -179,13 +200,15 @@ def _encode_cover(blob: bytes) -> str:
     with Image.open(io.BytesIO(blob), formats=("JPEG", "PNG", "WEBP")) as image:
         if image.width * image.height > 4_000_000:
             return ""
-        image.thumbnail((192, 272))
-        output = io.BytesIO()
-        image.convert("RGB").save(output, "JPEG", quality=80, optimize=True)
-    if output.tell() > 32 * 1024:
-        return ""
-    encoded = base64.b64encode(output.getvalue()).decode("ascii")
-    return "data:image/jpeg;base64," + encoded
+        image.thumbnail((400, 720), Image.Resampling.LANCZOS)
+        rgb = image.convert("RGB")
+        for quality in (91, 82):
+            with io.BytesIO() as output:
+                rgb.save(output, "JPEG", quality=quality, optimize=True, subsampling=0)
+                if output.tell() <= COVER_OUTPUT_LIMIT:
+                    encoded = base64.b64encode(output.getvalue()).decode("ascii")
+                    return "data:image/jpeg;base64," + encoded
+    return ""
 
 
 class DailySources:
@@ -315,16 +338,20 @@ class DailySources:
             url, params=params, proxy=self.bangumi_proxy, json_body=json_body
         )
 
-    async def _download_cover(self, url: str, proxy: str | None) -> str:
-        if not url:
+    async def _download_cover(self, urls: tuple[str, ...], proxy: str | None) -> str:
+        if not urls:
             return ""
         async with self._cover_slots:
-            for route in self._bangumi_routes(proxy):
-                try:
-                    blob = await self._read(url, as_cover=True, proxy=route)
-                    return await asyncio.to_thread(_encode_cover, blob)
-                except (*SOURCE_ERRORS, OSError, Image.DecompressionBombError):
-                    continue
+            for url in urls:
+                for route in self._bangumi_routes(proxy):
+                    try:
+                        blob = await self._read(url, as_cover=True, proxy=route)
+                        cover = await asyncio.to_thread(_encode_cover, blob)
+                    except (*SOURCE_ERRORS, OSError, Image.DecompressionBombError):
+                        continue
+                    if cover:
+                        return cover
+                    break
         return ""
 
     async def _anime(self, day: date, count: int) -> Section:
@@ -406,7 +433,7 @@ class DailySources:
         entry: dict,
         day: date,
         proxy: str | None,
-    ) -> tuple[Headline, str] | None:
+    ) -> tuple[Headline, tuple[str, ...]] | None:
         title = _text(entry.get("name_cn"), 90) or _text(entry.get("name"), 90)
         if not title:
             return None
@@ -421,18 +448,10 @@ class DailySources:
         if day not in dates and (dates or premiere != day):
             return None
 
-        cover = ""
-        if self.show_covers:
-            images = _object(entry.get("images"))
-            cover = next(
-                (
-                    link
-                    for key in ("small", "medium", "common", "large")
-                    if (link := _cover_link(images.get(key)))
-                ),
-                "",
-            )
-        return _headline(title, url=f"https://bgm.tv/subject/{subject_id}"), cover
+        covers = (
+            _cover_candidates(_object(entry.get("images"))) if self.show_covers else ()
+        )
+        return _headline(title, url=f"https://bgm.tv/subject/{subject_id}"), covers
 
     async def _anime_from_calendar(
         self,
@@ -466,7 +485,7 @@ class DailySources:
             if premiere is None or premiere <= day:
                 candidates.setdefault(subject_id, entry)
 
-        matches: list[tuple[Headline, str]] = []
+        matches: list[tuple[Headline, tuple[str, ...]]] = []
         incomplete = False
         try:
             async with asyncio.timeout(BANGUMI_CHECK_TIMEOUT):
@@ -494,13 +513,13 @@ class DailySources:
         matches = matches[:count]
         if self.show_covers and any(cover for _, cover in matches):
 
-            async def populate_cover(item: Headline, url: str) -> None:
-                item["cover"] = await self._download_cover(url, proxy)
+            async def populate_cover(item: Headline, urls: tuple[str, ...]) -> None:
+                item["cover"] = await self._download_cover(urls, proxy)
 
             try:
                 async with asyncio.timeout(COVER_BATCH_TIMEOUT):
                     await asyncio.gather(
-                        *(populate_cover(item, url) for item, url in matches)
+                        *(populate_cover(item, urls) for item, urls in matches)
                     )
             except TimeoutError:
                 LOGGER.debug("美咲日报番剧封面下载已到时限，保留已取得的封面")

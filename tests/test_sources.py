@@ -14,11 +14,13 @@ from sources import (
     BANGUMI_SEARCH,
     BILIBILI_HOTWORDS,
     COVER_LIMIT,
+    COVER_OUTPUT_LIMIT,
     HITOKOTO,
     ITHOME_RSS,
     UAPI,
     WORLD_NEWS,
     DailySources,
+    _cover_candidates,
 )
 
 TODAY = date(2026, 11, 26)
@@ -135,7 +137,7 @@ class TestDailySources(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             [call.args for call in download.await_args_list],
-            [(cover.replace("http:", "https:"), proxy), ("", proxy)],
+            [((cover.replace("http:", "https:"),), proxy), ((), proxy)],
         )
         self.assertNotIn("secret", " ".join(logs.output))
 
@@ -167,8 +169,8 @@ class TestDailySources(unittest.IsolatedAsyncioTestCase):
             }
         ]
 
-        async def cover_for(url, proxy):
-            if url.endswith("/completed.jpg"):
+        async def cover_for(urls, proxy):
+            if urls[0].endswith("/completed.jpg"):
                 return "data:image/jpeg;base64,abc"
             await asyncio.Event().wait()
 
@@ -434,14 +436,52 @@ class TestDailySources(unittest.IsolatedAsyncioTestCase):
         Image.new("RGB", (500, 750), "green").save(buffer, "PNG")
         with patch.object(self.sources, "_read", return_value=buffer.getvalue()):
             cover = await self.sources._download_cover(
-                "https://lain.bgm.tv/a.png", None
+                ("https://lain.bgm.tv/pic/cover/m/a.png",), None
             )
         prefix, payload = cover.split(",", 1)
         self.assertEqual(prefix, "data:image/jpeg;base64")
         with Image.open(io.BytesIO(base64.b64decode(payload))) as image:
             self.assertEqual(image.format, "JPEG")
-            self.assertLessEqual(image.width, 192)
-            self.assertLessEqual(image.height, 272)
+            self.assertEqual(image.size, (400, 600))
+        self.assertLessEqual(len(base64.b64decode(payload)), COVER_OUTPUT_LIMIT)
+
+    def test_cover_prefers_cdn_resize_with_safe_smaller_fallbacks(self) -> None:
+        cdn = "https://lain.bgm.tv"
+        original = "/pic/cover/l/12/34/42.jpg"
+        large = f"http://lain.bgm.tv{original}"
+        medium = f"{cdn}/pic/cover/m/12/34/42.jpg"
+        small = f"{cdn}/pic/cover/s/12/34/42.jpg"
+        images = {
+            "large": large,
+            "common": f"{cdn}/r/400{original}",
+            "medium": medium,
+            "small": small,
+        }
+        self.assertEqual(
+            _cover_candidates(images),
+            (f"{cdn}/r/400{original}", medium, small, f"{cdn}{original}"),
+        )
+        images["common"] = "https://lain.bgm.tv.evil.example/pic/cover/s/12/34/42.jpg"
+        images["large"] = f"{large}?redirect=1"
+        self.assertEqual(_cover_candidates(images), (medium, small))
+        resized = f"{cdn}/r/800{original}"
+        self.assertEqual(_cover_candidates({"large": resized}), (resized,))
+
+    async def test_cover_falls_back_when_large_image_cannot_be_decoded(self) -> None:
+        buffer = io.BytesIO()
+        Image.new("RGB", (150, 225), "green").save(buffer, "PNG")
+        large = "https://lain.bgm.tv/r/400/pic/cover/l/a.png"
+        small = "https://lain.bgm.tv/pic/cover/s/a.png"
+        with patch.object(
+            self.sources, "_read", side_effect=[b"invalid image", buffer.getvalue()]
+        ) as request:
+            cover = await self.sources._download_cover((large, small), None)
+        self.assertTrue(cover)
+        self.assertEqual(
+            [call.args for call in request.await_args_list], [(large,), (small,)]
+        )
+        with Image.open(io.BytesIO(base64.b64decode(cover.split(",", 1)[1]))) as image:
+            self.assertEqual(image.size, (150, 225))
 
     async def test_cover_never_follows_redirect_and_bounds_stream(self) -> None:
         class Response:
@@ -466,13 +506,17 @@ class TestDailySources(unittest.IsolatedAsyncioTestCase):
         response = Response()
         with patch.object(self.session, "get", return_value=response) as request:
             self.assertEqual(
-                await self.sources._download_cover("https://lain.bgm.tv/a.jpg", None),
+                await self.sources._download_cover(
+                    ("https://lain.bgm.tv/pic/cover/m/a.jpg",), None
+                ),
                 "",
             )
             self.assertIs(request.call_args.kwargs["allow_redirects"], False)
             response.status = 200
             self.assertEqual(
-                await self.sources._download_cover("https://lain.bgm.tv/a.jpg", None),
+                await self.sources._download_cover(
+                    ("https://lain.bgm.tv/pic/cover/m/a.jpg",), None
+                ),
                 "",
             )
 

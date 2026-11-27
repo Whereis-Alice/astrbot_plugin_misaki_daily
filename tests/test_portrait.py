@@ -48,6 +48,7 @@ class PortraitTests(unittest.IsolatedAsyncioTestCase):
         ):
             directory = Path(temp)
             loaded = await portrait.load_portrait(session, directory)
+            self.assertEqual(loaded.size, (59, 590))
             self.assertEqual(
                 loaded.getpixel((0, loaded.height - 1)), (128, 0, 128, 255)
             )

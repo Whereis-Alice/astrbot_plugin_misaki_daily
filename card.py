@@ -10,6 +10,8 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 ASSETS = Path(__file__).resolve().parent / "assets"
 WIDTH = 960
+RENDER_SCALE = 2
+MAX_IMAGE_HEIGHT = 8000
 MARGIN = 27
 CONTENT_X = 54
 CONTENT_W = WIDTH - 2 * CONTENT_X
@@ -44,26 +46,30 @@ STATUS_TEXT = {"empty": "今天暂无条目", "error": "数据源暂不可用"}
 _NO_LINE_START = '，。；、：！？》〉」』】〕）］｝”’…·,.?!)":;'
 
 
-@lru_cache(maxsize=18)
+def _pixels(*values: int) -> tuple[int, ...]:
+    return tuple(value * RENDER_SCALE for value in values)
+
+
+@lru_cache(maxsize=36)
 def _font(size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.truetype(str(ASSETS / "NotoSansSC-Regular.otf"), size)
 
 
 @lru_cache(maxsize=1)
 def _masthead_font() -> ImageFont.FreeTypeFont:
-    return ImageFont.truetype(str(ASSETS / "DailyMasthead.ttf"), 164)
+    return ImageFont.truetype(str(ASSETS / "DailyMasthead.ttf"), 164 * RENDER_SCALE)
 
 
 @lru_cache(maxsize=1)
 def _phonetic_font() -> ImageFont.FreeTypeFont:
-    return ImageFont.truetype(str(ASSETS / "NotoSans-Latin.ttf"), 23)
+    return ImageFont.truetype(str(ASSETS / "NotoSans-Latin.ttf"), 23 * RENDER_SCALE)
 
 
 @lru_cache(maxsize=len(ICONS))
 def _section_icon(key: str) -> Image.Image:
     with Image.open(ASSETS / "icons" / ICONS[key]) as icon:
         return ImageOps.contain(
-            icon.convert("RGBA"), (31, 31), Image.Resampling.LANCZOS
+            icon.convert("RGBA"), _pixels(31, 31), Image.Resampling.LANCZOS
         )
 
 
@@ -78,7 +84,12 @@ def _text(
     weight: int = 0,
 ) -> None:
     draw.text(
-        xy, value, font=_font(size), fill=color, anchor=anchor, stroke_width=weight
+        _pixels(*xy),
+        value,
+        font=_font(size * RENDER_SCALE),
+        fill=color,
+        anchor=anchor,
+        stroke_width=weight * RENDER_SCALE,
     )
 
 
@@ -118,23 +129,38 @@ def _wrap(value: str, size: int, width: int, max_lines: int) -> list[str]:
 def _frame(
     key: str, width: int, height: int, source: str = ""
 ) -> tuple[Image.Image, ImageDraw.ImageDraw]:
-    image = Image.new("RGB", (width, height), PAPER)
+    image = Image.new("RGB", _pixels(width, height), PAPER)
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle(
-        (1, 28, width - 2, height - 2), radius=18, fill=PANEL, outline=EDGE, width=4
+        _pixels(1, 28, width - 2, height - 2),
+        radius=18 * RENDER_SCALE,
+        fill=PANEL,
+        outline=EDGE,
+        width=4 * RENDER_SCALE,
     )
     label = LABELS[key]
     label_right = 83 + round(_font(27).getlength(label)) + 16
     draw.rounded_rectangle(
-        (19, 1, label_right, 55), radius=15, fill=LABEL, outline=EDGE, width=3
+        _pixels(19, 1, label_right, 55),
+        radius=15 * RENDER_SCALE,
+        fill=LABEL,
+        outline=EDGE,
+        width=3 * RENDER_SCALE,
     )
     if key in ICONS:
         icon = _section_icon(key)
         image.paste(
-            icon, (31 + (31 - icon.width) // 2, 12 + (31 - icon.height) // 2), icon
+            icon,
+            (
+                31 * RENDER_SCALE + (31 * RENDER_SCALE - icon.width) // 2,
+                12 * RENDER_SCALE + (31 * RENDER_SCALE - icon.height) // 2,
+            ),
+            icon,
         )
     else:
-        draw.rounded_rectangle((31, 12, 62, 43), radius=7, fill=TINT)
+        draw.rounded_rectangle(
+            _pixels(31, 12, 62, 43), radius=7 * RENDER_SCALE, fill=TINT
+        )
         _text(draw, (47, 28), "EN", 14, ACCENT, anchor="mm", weight=1)
     _text(draw, (72, 16), label, 27, ACCENT, weight=1)
     if source and label_right + _font(17).getlength(source) + 45 < width:
@@ -155,7 +181,9 @@ def _calendar(festivals: list[dict], width: int, height: int) -> Image.Image:
             draw, (width - 24, y + 2), _countdown(item), 23, INK, anchor="rt", weight=1
         )
         if index < len(festivals) - 1:
-            draw.line((24, y + 34, width - 24, y + 34), fill=RULE)
+            draw.line(
+                _pixels(24, y + 34, width - 24, y + 34), fill=RULE, width=RENDER_SCALE
+            )
     return image
 
 
@@ -187,10 +215,12 @@ def _list_panel(
     for index, row in enumerate(rows):
         if hot:
             color, label = ("#FF6868", "热") if index < 4 else ("#9C5529", "荐")
-            draw.rounded_rectangle((24, y + 1, 54, y + 31), radius=7, fill=color)
+            draw.rounded_rectangle(
+                _pixels(24, y + 1, 54, y + 31), radius=7 * RENDER_SCALE, fill=color
+            )
             _text(draw, (39, y + 16), label, 19, "#FFFFFF", anchor="mm")
         else:
-            draw.ellipse((27, y + 11, 34, y + 18), fill=ACCENT)
+            draw.ellipse(_pixels(27, y + 11, 34, y + 18), fill=ACCENT)
         for line in row:
             _text(draw, (24 + marker, y), line, size)
             y += line_height
@@ -223,17 +253,22 @@ def _anime_panel(section: dict, show_covers: bool) -> Image.Image:
     row_height = poster_h + 100
     height = 79 + ((len(items) + columns - 1) // columns) * row_height
     image, draw = _frame("anime", CONTENT_W, height, section["source"])
-    mask = Image.new("L", (poster_w, poster_h))
+    poster_size = _pixels(poster_w, poster_h)
+    mask = Image.new("L", poster_size)
     ImageDraw.Draw(mask).rounded_rectangle(
-        (0, 0, poster_w - 1, poster_h - 1), radius=11, fill=255
+        (0, 0, poster_size[0] - 1, poster_size[1] - 1),
+        radius=11 * RENDER_SCALE,
+        fill=255,
     )
     for index, item in enumerate(items):
         x = 24 + (index % columns) * (poster_w + gap)
         y = 78 + (index // columns) * row_height
-        poster = _cover(item.get("cover", ""), (poster_w, poster_h))
+        poster = _cover(item.get("cover", ""), poster_size)
         if poster is None:
             draw.rounded_rectangle(
-                (x, y, x + poster_w - 1, y + poster_h - 1), radius=11, fill=TINT
+                _pixels(x, y, x + poster_w - 1, y + poster_h - 1),
+                radius=11 * RENDER_SCALE,
+                fill=TINT,
             )
             _text(
                 draw,
@@ -244,7 +279,7 @@ def _anime_panel(section: dict, show_covers: bool) -> Image.Image:
                 anchor="mm",
             )
         else:
-            image.paste(poster, (x, y), mask)
+            image.paste(poster, _pixels(x, y), mask)
         for line_index, line in enumerate(_wrap(item["title"], 20, poster_w, 3)):
             _text(
                 draw,
@@ -273,7 +308,9 @@ def _feature(key: str, section: dict) -> Image.Image:
         _text(draw, xy, line, 29, ACCENT, anchor="mt" if quote else "lt", weight=1)
         y += 38
     if phonetic:
-        draw.text((26, y), phonetic, font=_phonetic_font(), fill=MUTED, anchor="lt")
+        draw.text(
+            _pixels(26, y), phonetic, font=_phonetic_font(), fill=MUTED, anchor="lt"
+        )
         y += 31
     for index, line in enumerate(meta):
         xy = (CONTENT_W - 30, y) if quote else (26, y)
@@ -287,48 +324,68 @@ def _masthead(canvas: Image.Image, report: dict, portrait: Image.Image | None) -
     draw = ImageDraw.Draw(canvas)
     for y in range(59, 307, 9):
         for x in range(57 + (y % 2) * 4, WIDTH - 59, 9):
-            draw.point((x, y), fill=RULE)
+            px, py = _pixels(x, y)
+            draw.rectangle(
+                (px, py, px + RENDER_SCALE - 1, py + RENDER_SCALE - 1), fill=RULE
+            )
 
     if portrait is not None:
+        portrait = portrait.copy()
+        portrait.thumbnail(_pixels(210, 215), Image.Resampling.LANCZOS)
         canvas.paste(
             portrait,
-            (61 + (218 - portrait.width) // 2, 272 - portrait.height),
+            (
+                170 * RENDER_SCALE - portrait.width // 2,
+                272 * RENDER_SCALE - portrait.height,
+            ),
             portrait,
         )
     else:
-        draw.ellipse((94, 91, 239, 236), outline="#B4D5BC", width=2)
+        draw.ellipse(
+            _pixels(94, 91, 239, 236), outline="#B4D5BC", width=2 * RENDER_SCALE
+        )
         draw.line(
             [
-                (98, 201),
-                (225, 122),
-                (192, 223),
-                (164, 194),
-                (139, 216),
-                (149, 183),
-                (98, 201),
+                _pixels(98, 201),
+                _pixels(225, 122),
+                _pixels(192, 223),
+                _pixels(164, 194),
+                _pixels(139, 216),
+                _pixels(149, 183),
+                _pixels(98, 201),
             ],
             fill="#70A784",
-            width=4,
+            width=4 * RENDER_SCALE,
             joint="curve",
         )
         draw.line(
-            [(149, 183), (225, 122), (164, 194)], fill="#70A784", width=3, joint="curve"
+            [_pixels(149, 183), _pixels(225, 122), _pixels(164, 194)],
+            fill="#70A784",
+            width=3 * RENDER_SCALE,
+            joint="curve",
         )
 
     title_font = _masthead_font()
     for x, char in zip((380, 556), "日报", strict=True):
-        draw.text((x, 86), char, font=title_font, fill=ACCENT, anchor="mt")
+        draw.text(_pixels(x, 86), char, font=title_font, fill=ACCENT, anchor="mt")
 
     date_x = WIDTH - CONTENT_X - 205
     right = WIDTH - CONTENT_X
     center = (date_x + right) // 2
     top, bottom = 75, 302
-    draw.rounded_rectangle((date_x, top, right, bottom), radius=22, fill=LABEL)
-    draw.rounded_rectangle((date_x, top, right, top + 136), radius=22, fill=TINT)
-    draw.rectangle((date_x + 2, top + 105, right - 2, top + 130), fill=TINT)
-    draw.rectangle((date_x + 2, top + 126, right - 2, top + 177), fill="#3D7958")
     draw.rounded_rectangle(
-        (date_x, top, right, bottom), radius=22, outline=EDGE, width=3
+        _pixels(date_x, top, right, bottom), radius=22 * RENDER_SCALE, fill=LABEL
+    )
+    draw.rounded_rectangle(
+        _pixels(date_x, top, right, top + 136), radius=22 * RENDER_SCALE, fill=TINT
+    )
+    draw.rectangle(_pixels(date_x + 2, top + 105, right - 2, top + 130), fill=TINT)
+    draw.rectangle(_pixels(date_x + 2, top + 126, right - 2, top + 177), fill="#3D7958")
+    draw.rounded_rectangle(
+        _pixels(date_x, top, right, bottom),
+        radius=22 * RENDER_SCALE,
+        outline=EDGE,
+        width=3 * RENDER_SCALE,
     )
     calendar = report["calendar"]
     _text(
@@ -367,7 +424,7 @@ def render_card(report: dict, portrait: Image.Image | None = None) -> bytes:
         top_row = []
         if hot is not None:
             panel = _list_panel("hot", hot, hot_w, min_height=calendar_h)
-            calendar_h = panel.height
+            calendar_h = panel.height // RENDER_SCALE
         if festivals:
             top_row.append(_calendar(festivals, calendar_w, calendar_h))
         if hot is not None:
@@ -384,27 +441,40 @@ def render_card(report: dict, portrait: Image.Image | None = None) -> bytes:
         if key in sections:
             rows.append([_feature(key, sections[key])])
 
-    start = 319
-    height = start + sum(row[0].height + GAP for row in rows) + MARGIN + 8
-    canvas = Image.new("RGB", (WIDTH, height), "#B9D8C0")
+    start = 319 * RENDER_SCALE
+    gap = GAP * RENDER_SCALE
+    height = (
+        start + sum(row[0].height + gap for row in rows) + (MARGIN + 8) * RENDER_SCALE
+    )
+    canvas = Image.new("RGB", (WIDTH * RENDER_SCALE, height), "#B9D8C0")
     draw = ImageDraw.Draw(canvas)
     draw.rounded_rectangle(
-        (MARGIN, MARGIN, WIDTH - MARGIN - 1, height - MARGIN - 1), radius=31, fill=PAPER
+        (
+            *_pixels(MARGIN, MARGIN),
+            canvas.width - MARGIN * RENDER_SCALE - 1,
+            height - MARGIN * RENDER_SCALE - 1,
+        ),
+        radius=31 * RENDER_SCALE,
+        fill=PAPER,
     )
     _masthead(canvas, report, portrait)
     y = start
     for row in rows:
-        x = CONTENT_X
+        x = CONTENT_X * RENDER_SCALE
         for panel in row:
             canvas.paste(panel, (x, y))
-            x += panel.width + GAP
-        y += row[0].height + GAP
+            x += panel.width + gap
+        y += row[0].height + gap
+
+    if height > MAX_IMAGE_HEIGHT:
+        # Telegram photos require width plus height to stay within 10,000 pixels.
+        canvas.thumbnail((canvas.width, MAX_IMAGE_HEIGHT), Image.Resampling.LANCZOS)
 
     with BytesIO() as buffer:
         canvas.save(
             buffer,
             format="JPEG",
-            quality=91,
+            quality=95,
             optimize=True,
             progressive=True,
             subsampling=0,

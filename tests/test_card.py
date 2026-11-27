@@ -3,6 +3,7 @@ from datetime import date
 from io import BytesIO
 
 from PIL import Image
+from PIL.JpegImagePlugin import get_sampling
 
 from calendar_data import build_calendar
 from card import render_card, render_text_pages
@@ -47,12 +48,24 @@ class CardTests(unittest.TestCase):
         result = render_card(report)
         with Image.open(BytesIO(result)) as image:
             self.assertEqual(image.format, "JPEG")
-            self.assertEqual(image.width, 960)
+            self.assertEqual(image.width, 1920)
             self.assertGreater(image.height, image.width)
+            self.assertEqual(get_sampling(image), 0)
             image.verify()
 
-        portrait = Image.new("RGBA", (210, 215), "purple")
+        portrait = Image.new("RGBA", (420, 430), "purple")
         self.assertNotEqual(result, render_card(report, portrait))
+
+    def test_high_density_card_stays_within_long_image_limits(self):
+        report = sample_report()
+        for key in ("news", "tech", "hot", "anime"):
+            items = report["sections"][key]["items"]
+            items[:] = [{**items[0], "title": "测试一条较长的日报摘要。" * 15}] * 8
+
+        with Image.open(BytesIO(render_card(report))) as image:
+            self.assertEqual(image.height, 8000)
+            self.assertGreater(image.width, 960)
+            self.assertLess(image.width + image.height, 10000)
 
     def test_links_keep_title_url_pairs_and_deduplicate_edition(self):
         report = sample_report()
